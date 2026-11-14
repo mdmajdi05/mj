@@ -1,254 +1,169 @@
 'use client';
 
-import {
-  ArrowRight,
-  Bell,
-  BookOpen,
-  Gamepad2,
-  LockKeyhole,
-  MessageCircle,
-  Mic,
-  Phone,
-  ShieldCheck,
-  Sparkles,
-  Users
-} from 'lucide-react';
+import { ArrowRight, Gamepad2, Inbox, Play, Sparkles, Trophy, Users, Wifi, Zap } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
-import { Badge, Button, Panel, SectionTitle } from '@/components/ui';
-import { formatDateTime, eventLabel } from '@/lib/utils';
+import { gameCatalog } from '@/components/gameCatalog';
+import { Badge, Button, Panel } from '@/components/ui';
 
 export function HomeScreen() {
   const duo = useDuo();
-  const locked = duo.user?.role === 'GUEST' && !duo.user.chatUnlocked;
-
-  const cards = [
-    {
-      title: 'Private Chat',
-      description: locked
-        ? 'Unlock with your shared promo code to open the conversation.'
-        : 'Your one-to-one conversation, always private.',
-      icon: <MessageCircle size={24} />,
-      action: () => duo.navigate(locked ? 'PROMO' : 'CHAT'),
-      label: locked ? 'Unlock chat' : 'Open chat',
-      accent: 'from-fuchsia-500/20 to-purple-500/5'
-    },
-    {
-      title: 'Study Mode',
-      description: 'A calm space with the Study Assistant and no chat content on screen.',
-      icon: <BookOpen size={24} />,
-      action: () => duo.navigate('STUDY'),
-      label: 'Open study mode',
-      accent: 'from-sky-500/20 to-blue-500/5'
-    },
-    {
-      title: 'Games',
-      description: 'Three quick games, scores and a private Game Inbox.',
-      icon: <Gamepad2 size={24} />,
-      action: () => duo.navigate('GAMES'),
-      label: 'Choose a game',
-      accent: 'from-emerald-500/20 to-teal-500/5'
-    }
-  ];
 
   return (
     <>
-      <section className="home-hero">
-        <div>
-          <p className="eyebrow">Your private space</p>
+      <section className="home-hero game-hero">
+        <div className="min-w-0">
+          <p className="eyebrow">Private arcade</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight md:text-4xl">
-            Welcome back, {duo.user?.username}.
+            Game Lounge
           </h1>
           <p className="muted mt-2 max-w-xl text-sm leading-6">
-            A quiet place to talk, learn and play together. Everything here is built for exactly
-            two people.
+            Quick games, friendly competition aur ek private scoreboard. Pick a game and start
+            playing — no feed, no noise.
           </p>
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <Badge tone={duo.otherOnline ? 'good' : 'neutral'}>
-              {duo.otherOnline ? 'Other participant online' : 'Other participant offline'}
+              <Wifi size={11} className="mr-1 inline" />
+              {duo.otherOnline ? 'Player online' : 'Waiting for player'}
             </Badge>
             <Badge tone="accent">
-              {duo.user?.role === 'HOST' ? 'Host account' : 'Guest account'}
+              <Trophy size={11} className="mr-1 inline" /> {gameCatalog.length} games ready
             </Badge>
-            {locked && <Badge tone="warn">Chat locked</Badge>}
+            <Badge tone="neutral">
+              <Zap size={11} className="mr-1 inline" /> Instant play
+            </Badge>
           </div>
         </div>
-        <div className="home-hero-orb">
-          <svg viewBox="0 0 64 56" className="h-16 w-16" aria-hidden="true">
-            <defs>
-              <linearGradient id="home-wing" x1="0" x2="1" y1="0" y2="1">
-                <stop offset="0%" stopColor="#c084fc" />
-                <stop offset="55%" stopColor="#e879f9" />
-                <stop offset="100%" stopColor="#60a5fa" />
-              </linearGradient>
-            </defs>
-            <path
-              d="M30 27C18 8 4 5 3 16c-1 10 9 17 24 18-12 5-17 14-9 18 7 4 14-5 14-12Zm4 0C46 8 60 5 61 16c1 10-9 17-24 18 12 5 17 14 9 18-7 4-14-5-14-12Z"
-              fill="url(#home-wing)"
-            />
-            <ellipse cx="32" cy="29" rx="2.4" ry="10" fill="#f5d0fe" />
-          </svg>
+        <div className="home-hero-orb game-orb">
+          <Gamepad2 size={44} className="text-fuchsia-100" />
         </div>
       </section>
 
       <div className="mt-5 grid gap-3 sm:grid-cols-3">
-        {cards.map((card) => (
-          <button
-            key={card.title}
-            className={`quick-card bg-gradient-to-br ${card.accent}`}
-            onClick={card.action}
+        <StudioStat
+          icon={<Gamepad2 size={16} />}
+          label="Games"
+          value={String(gameCatalog.length)}
+          hint="Ready to play"
+        />
+        <StudioStat
+          icon={<Inbox size={16} />}
+          label="Game inbox"
+          value={String(duo.inboxUnread)}
+          hint={duo.inboxUnread ? 'New messages' : 'All clear'}
+        />
+        <StudioStat
+          icon={<Users size={16} />}
+          label="Players"
+          value="2"
+          hint={duo.otherOnline ? 'Both online' : 'One online'}
+        />
+      </div>
+
+      <div className="mt-6 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="eyebrow">Choose your challenge</p>
+          <h2 className="mt-1 text-2xl font-semibold tracking-tight">All games</h2>
+        </div>
+        <Button onClick={() => duo.navigate('INBOX')}>
+          <Inbox size={16} /> Game Inbox
+          {duo.inboxUnread > 0 && (
+            <span className="rounded-full bg-pink-500 px-1.5 text-[10px]">{duo.inboxUnread}</span>
+          )}
+        </Button>
+      </div>
+
+      <div className="mt-4 grid gap-4 md:grid-cols-3">
+        {gameCatalog.map((game, index) => (
+          <div
+            key={game.slug}
+            className={`quick-card game-card bg-gradient-to-br ${game.tone} flex flex-col`}
           >
-            <span className="quick-icon">{card.icon}</span>
-            <h3 className="mt-5 text-lg font-semibold">{card.title}</h3>
-            <p className="muted mt-1 text-sm leading-6">{card.description}</p>
-            <span className="mt-4 inline-flex items-center gap-1 text-sm text-fuchsia-200">
-              {card.label}
-              <ArrowRight size={14} />
-            </span>
-          </button>
+            <div className="flex items-start justify-between gap-3">
+              <span className="quick-icon">{game.icon}</span>
+              <span className="game-rank">0{index + 1}</span>
+            </div>
+            <h3 className="mt-5 text-xl font-semibold">{game.name}</h3>
+            <p className="muted mt-2 flex-1 text-sm leading-6">{game.description}</p>
+            <Badge tone="accent">
+              <Sparkles size={11} className="mr-1 inline" />
+              {game.tag}
+            </Badge>
+            <Button
+              variant="primary"
+              className="mt-4 w-full"
+              onClick={() => duo.startGame(game.slug)}
+            >
+              <Play size={16} /> Play now
+            </Button>
+          </div>
         ))}
       </div>
 
-      <div className="mt-5 grid gap-4 lg:grid-cols-[1.1fr_.9fr]">
+      <div className="mt-5 grid gap-4 lg:grid-cols-[1.15fr_.85fr]">
         <Panel className="p-5">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="eyebrow">Audio calling</p>
-              <h3 className="mt-1 text-lg font-semibold">Talk privately</h3>
-              <p className="muted mt-1 text-sm leading-6">
-                Microphone access is requested only when you start or accept a call. Guest can
-                hide a call and keep it running with sound completely disabled.
-              </p>
-            </div>
-            <span className="quick-icon shrink-0">
-              <Phone size={22} />
-            </span>
-          </div>
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Button
-              variant="primary"
-              onClick={() => void duo.startCall()}
-              disabled={duo.callState !== 'IDLE'}
-            >
-              <Mic size={16} />
-              {duo.callState === 'IDLE' ? 'Start audio call' : `Call ${duo.callState.toLowerCase()}`}
-            </Button>
-            {duo.permissions.some(
-              (permission) =>
-                permission.name === 'REMOTE_MIC_CONTROL' &&
-                permission.status === 'GRANTED' &&
-                (permission.requestedBy === duo.user?.id || permission.grantedBy === duo.user?.id)
-            ) && <Badge tone="good">Remote mic consent active</Badge>}
-          </div>
-        </Panel>
-
-        <Panel className="p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="eyebrow">Recent activity</p>
-              <h3 className="mt-1 text-lg font-semibold">Little signals</h3>
-            </div>
-            <Button className="text-xs" onClick={() => void duo.markNotificationsRead()}>
-              Mark read
-            </Button>
-          </div>
-          <div className="mt-3 space-y-2">
-            {duo.notifications.slice(0, 5).map((notification) => (
-              <div
-                key={notification.id}
-                className="flex items-start gap-3 rounded-xl border border-white/5 bg-black/15 px-3 py-2.5"
-              >
-                <span className="mt-0.5 rounded-lg bg-white/5 p-1.5 text-fuchsia-200">
-                  <Bell size={13} />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm">{eventLabel(notification.eventType)}</p>
-                  <p className="muted mt-0.5 text-[11px]">
-                    {notification.actor?.username || 'System'} ·{' '}
-                    {formatDateTime(notification.createdAt)}
-                  </p>
-                </div>
-                {!notification.readAt && <span className="mt-1 h-1.5 w-1.5 rounded-full bg-fuchsia-400" />}
-              </div>
-            ))}
-            {!duo.notifications.length && (
-              <p className="muted py-6 text-center text-sm">No recent activity yet.</p>
-            )}
-          </div>
-        </Panel>
-      </div>
-
-      <div className="mt-5 grid gap-3 sm:grid-cols-3">
-        <MiniStat
-          icon={<MessageCircle size={16} />}
-          label="Unread chat"
-          value={String(duo.unread)}
-        />
-        <MiniStat icon={<Bell size={16} />} label="Game inbox" value={String(duo.inboxUnread)} />
-        <MiniStat
-          icon={<ShieldCheck size={16} />}
-          label="Permissions"
-          value={String(
-            duo.permissions.filter((permission) => permission.status === 'GRANTED').length
-          )}
-        />
-      </div>
-
-      {locked && (
-        <Panel className="mt-5 flex flex-wrap items-center justify-between gap-3 p-5">
           <div className="flex items-start gap-3">
-            <span className="quick-icon">
-              <LockKeyhole size={20} />
+            <span className="quick-icon shrink-0">
+              <Trophy size={22} />
             </span>
             <div>
-              <p className="font-medium">Your Chat is locked</p>
-              <p className="muted mt-1 text-sm">
-                Enter the shared promo code from Host. It is separate from your account password.
+              <p className="eyebrow">Game Inbox</p>
+              <h3 className="mt-1 text-lg font-semibold">Messages from the games</h3>
+              <p className="muted mt-1 text-sm leading-6">
+                When SEND-TO-GAME is on, your game messages land in a separate inbox. Nothing is
+                mixed into the main conversation.
               </p>
             </div>
           </div>
-          <Button variant="primary" onClick={() => duo.navigate('PROMO')}>
-            Enter promo code
+          <Button className="mt-4" onClick={() => duo.navigate('INBOX')}>
+            Open Game Inbox <ArrowRight size={15} />
           </Button>
         </Panel>
-      )}
 
-      <Panel className="mt-5 flex flex-wrap items-center justify-between gap-3 p-5">
-        <div className="flex items-center gap-3">
-          <span className="quick-icon">
-            <Users size={20} />
-          </span>
-          <div>
-            <p className="font-medium">Exactly two accounts</p>
-            <p className="muted mt-1 text-xs">
-              Host and Guest. No public signup, no hidden monitoring, no message previews in
-              notifications.
-            </p>
+        <Panel className="p-5">
+          <p className="eyebrow">How it works</p>
+          <div className="mt-3 space-y-3 text-sm">
+            <Step number="1" title="Pick a game" text="Choose any card above to start a round." />
+            <Step number="2" title="Beat your score" text="Every score is saved to your account." />
+            <Step number="3" title="Send a note" text="Use Send-to-Game after a round if you like." />
           </div>
-        </div>
-        <Badge tone="accent">
-          <Sparkles size={12} className="mr-1 inline" />
-          Private by design
-        </Badge>
-      </Panel>
+        </Panel>
+      </div>
     </>
   );
 }
 
-function MiniStat({
+function StudioStat({
   icon,
   label,
-  value
+  value,
+  hint
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
+  hint: string;
 }) {
   return (
     <div className="panel-soft flex items-center gap-3 p-4">
       <span className="rounded-xl bg-white/5 p-2 text-fuchsia-200">{icon}</span>
-      <div>
+      <div className="min-w-0">
         <p className="muted text-[11px] uppercase tracking-wider">{label}</p>
-        <p className="text-lg font-semibold">{value}</p>
+        <p className="text-lg font-semibold leading-tight">{value}</p>
+        <p className="muted truncate text-[11px]">{hint}</p>
+      </div>
+    </div>
+  );
+}
+
+function Step({ number, title, text }: { number: string; title: string; text: string }) {
+  return (
+    <div className="flex items-start gap-3">
+      <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-white/10 bg-white/5 text-[11px] font-semibold text-fuchsia-200">
+        {number}
+      </span>
+      <div>
+        <p className="font-medium leading-tight">{title}</p>
+        <p className="muted mt-0.5 text-xs leading-5">{text}</p>
       </div>
     </div>
   );

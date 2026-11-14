@@ -3,13 +3,12 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Bell,
-  BookOpen,
   ChevronDown,
   Gamepad2,
   Home,
   Inbox,
   LogOut,
-  MessageCircle,
+  PhoneCall,
   Settings,
   Shield,
   Ticket,
@@ -18,7 +17,7 @@ import {
 } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
 import type { Screen } from '@/lib/types';
-import { formatDateTime, eventLabel } from '@/lib/utils';
+import { formatDateTime, formatDuration, eventLabel } from '@/lib/utils';
 import { Badge, Button } from '@/components/ui';
 
 export function AppHeader() {
@@ -77,6 +76,25 @@ export function AppHeader() {
       </button>
 
       <div className="flex items-center gap-2">
+        {(duo.callState === 'ACTIVE' ||
+          duo.callState === 'CONNECTING' ||
+          duo.callState === 'RECONNECTING') && (
+          <button
+            type="button"
+            className={`call-timer-chip ${
+              duo.callState === 'RECONNECTING' ? 'call-timer-chip-warn' : ''
+            }`}
+            onClick={duo.playRemoteAudio}
+            title="Free chat timer. Tap to enable call sound."
+          >
+            <PhoneCall size={14} />
+            <span className="hidden sm:inline">
+              {duo.callState === 'RECONNECTING' ? 'Reconnecting' : 'Free chat'}
+            </span>
+            <b>{formatDuration(duo.callSeconds)}</b>
+          </button>
+        )}
+
         <div className="relative" ref={notificationsRef}>
           <button
             className="icon-btn relative"
@@ -162,8 +180,12 @@ export function AppHeader() {
                 </div>
               </div>
               <div className="my-1 h-px bg-white/10" />
-              <MenuItem icon={<Gamepad2 size={16} />} label="Go to Game" onClick={() => go('GAMES')} />
-              <MenuItem icon={<Ticket size={16} />} label="Enter Promo Code" onClick={() => go('PROMO')} />
+              <MenuItem icon={<Gamepad2 size={16} />} label="Games" onClick={() => go('GAMES')} />
+              <MenuItem
+                icon={<Ticket size={16} />}
+                label="Enter Secret Code"
+                onClick={() => go('PROMO')}
+              />
               <MenuItem icon={<Settings size={16} />} label="Settings" onClick={() => go('SETTINGS')} />
               {duo.user?.role === 'HOST' && (
                 <MenuItem icon={<Shield size={16} />} label="Admin Dashboard" onClick={() => go('ADMIN')} />
@@ -203,8 +225,6 @@ function MenuItem({
 
 const navItems: Array<{ screen: Screen; label: string; icon: React.ReactNode }> = [
   { screen: 'HOME', label: 'Home', icon: <Home size={16} /> },
-  { screen: 'CHAT', label: 'Chat', icon: <MessageCircle size={16} /> },
-  { screen: 'STUDY', label: 'Study', icon: <BookOpen size={16} /> },
   { screen: 'GAMES', label: 'Games', icon: <Gamepad2 size={16} /> },
   { screen: 'INBOX', label: 'Inbox', icon: <Inbox size={16} /> }
 ];
@@ -274,7 +294,7 @@ export function AppSidebar() {
 export function AppMobileNav() {
   const duo = useDuo();
   return (
-    <nav className="panel mb-4 grid grid-cols-5 gap-1 p-1 md:hidden">
+    <nav className="panel mb-4 grid grid-cols-3 gap-1 p-1 md:hidden">
       {navItems.map((item) => (
         <button
           key={item.screen}

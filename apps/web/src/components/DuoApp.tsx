@@ -15,7 +15,7 @@ import { RestoreScreen } from '@/components/RestoreScreen';
 import { SettingsScreen } from '@/components/SettingsScreen';
 import { AdminScreen } from '@/components/AdminScreen';
 import { ButterflyLayer } from '@/components/ButterflyLayer';
-import { CallOverlay } from '@/components/CallOverlay';
+import { IncomingCallBar } from '@/components/CallControls';
 import { Spinner } from '@/components/ui';
 
 export default function DuoApp() {
@@ -75,7 +75,7 @@ function DuoShell() {
       {/* Remote WebRTC audio only. No audio or message content is rendered. */}
       <audio ref={duo.remoteAudioRef} autoPlay playsInline className="hidden" />
 
-      <CallOverlay />
+      <IncomingCallBar />
 
       <div className="toast-stack" aria-live="polite">
         {duo.error && (

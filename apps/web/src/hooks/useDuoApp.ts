@@ -13,6 +13,7 @@ import { io, type Socket } from 'socket.io-client';
 import { API, api, ApiError } from '@/lib/api';
 import type {
   AdminActivity,
+  CallRecord,
   CallState,
   ConversationStatus,
   GameMessage,
@@ -75,6 +76,8 @@ export function useDuoApp() {
   const [callMuted, setCallMuted] = useState(false);
   const [callHidden, setCallHidden] = useState(false);
   const [callSeconds, setCallSeconds] = useState(0);
+  const [callStartedAt, setCallStartedAt] = useState<number | null>(null);
+  const [restoredCall, setRestoredCall] = useState<CallRecord | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
   const userRef = useRef<User | null>(null);
@@ -89,6 +92,9 @@ export function useDuoApp() {
   const callStateRef = useRef<CallState>('IDLE');
   const callTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const callHiddenRef = useRef(false);
+  const lastOfferAtRef = useRef(0);
+  const resumedCallRef = useRef('');
+  const justLoggedInRef = useRef(false);
 
   userRef.current = user;
   screenRef.current = screen;
@@ -273,9 +279,14 @@ export function useDuoApp() {
       method: 'POST',
       body: JSON.stringify({ username, password })
     });
+    justLoggedInRef.current = true;
     setUser(account);
     userRef.current = account;
     setScreen('HOME');
+    void api('/chat/screen', {
+      method: 'POST',
+      body: JSON.stringify({ screen: 'HOME' })
+    }).catch(() => undefined);
   }, [setScreen]);
 
   const logout = useCallback(async () => {
@@ -414,6 +425,14 @@ export function useDuoApp() {
         if (next === 'ADMIN' && user.role !== 'HOST') next = 'HOME';
         if (next === 'GAME') next = 'GAMES';
         if (preference.chatVisible === false && next === 'CHAT') next = 'STUDY';
+        if (justLoggedInRef.current) {
+          justLoggedInRef.current = false;
+          next = 'HOME';
+          void api('/chat/screen', {
+            method: 'POST',
+            body: JSON.stringify({ screen: 'HOME' })
+          }).catch(() => undefined);
+        }
         setScreen(next);
         setConversationStatus(summary.status);
         setUnread(summary.unreadMessages);
@@ -421,7 +440,7 @@ export function useDuoApp() {
         setActivityUnread(summary.unreadNotifications);
         setOtherOnline(summary.onlineUserIds.some((id) => id !== user.id));
         if (summary.activeCall) {
-          showNotice('An audio call was already in progress. Please start a fresh call if needed.');
+          setRestoredCall(summary.activeCall);
         }
       } catch {
         // A missing preference is not fatal; the app still starts on HOME.
@@ -467,7 +486,10 @@ export function useDuoApp() {
 
   const attachPeerHandlers = useCallback((peer: RTCPeerConnection) => {
     peer.ontrack = (event) => {
-      if (remoteAudioRef.current) remoteAudioRef.current.srcObject = event.streams[0];
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.srcObject = event.streams[0];
+        void remoteAudioRef.current.play().catch(() => undefined);
+      }
     };
     peer.onicecandidate = (event) => {
       if (event.candidate && callIdRef.current) {
@@ -499,6 +521,8 @@ export function useDuoApp() {
               });
             })
             .catch(() => undefined);
+        } else if (callIdRef.current) {
+          socketRef.current?.emit('call:rejoin', { callId: callIdRef.current });
         }
       }
     };
@@ -517,6 +541,10 @@ export function useDuoApp() {
     setIncomingCall(null);
     setRemoteMicOn(null);
     setCallSeconds(0);
+    setCallStartedAt(null);
+    setRestoredCall(null);
+    resumedCallRef.current = '';
+    lastOfferAtRef.current = 0;
     setCallHidden(false);
     setCallMuted(false);
     setMicOn(true);
@@ -564,21 +592,52 @@ export function useDuoApp() {
     []
   );
 
+  const ensurePeer = useCallback(async () => {
+    if (pcRef.current && localStreamRef.current) return pcRef.current;
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true }
+    });
+    localStreamRef.current = stream;
+    setMicOn(stream.getAudioTracks().every((track) => track.enabled));
+    const peer = new RTCPeerConnection({ iceServers });
+    pcRef.current = peer;
+    stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+    attachPeerHandlers(peer);
+    return peer;
+  }, [attachPeerHandlers]);
+
+  const sendOffer = useCallback(async (iceRestart = false) => {
+    const peer = pcRef.current;
+    const id = callIdRef.current;
+    if (!peer || !id) return;
+    const now = Date.now();
+    if (now - lastOfferAtRef.current < 900) return;
+    lastOfferAtRef.current = now;
+    try {
+      if (iceRestart) peer.restartIce();
+      const offer = await peer.createOffer({ iceRestart });
+      await peer.setLocalDescription(offer);
+      socketRef.current?.emit('call:signal', {
+        callId: id,
+        kind: 'offer',
+        signal: offer
+      });
+    } catch (cause) {
+      console.error('Could not create call offer', cause);
+    }
+  }, []);
+
   const startCall = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true }
-      });
-      localStreamRef.current = stream;
+      if (pcRef.current || localStreamRef.current) closeLocalCall();
+      lastOfferAtRef.current = 0;
+      await ensurePeer();
       setMicOn(true);
       setCallMuted(false);
       setCallHidden(false);
-      const peer = new RTCPeerConnection({ iceServers });
-      pcRef.current = peer;
-      stream.getTracks().forEach((track) => peer.addTrack(track, stream));
-      attachPeerHandlers(peer);
-      socketRef.current?.emit('call:invite');
+      setCallStartedAt(null);
       setCallState('CONNECTING');
+      socketRef.current?.emit('call:invite');
     } catch (cause) {
       showError(
         `Microphone access is required to start a call: ${
@@ -586,25 +645,23 @@ export function useDuoApp() {
         }`
       );
     }
-  }, [attachPeerHandlers, showError]);
+  }, [closeLocalCall, ensurePeer, showError]);
 
   const acceptCall = useCallback(async () => {
     if (!incomingCall) return;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true }
-      });
-      localStreamRef.current = stream;
+      await ensurePeer();
       setMicOn(true);
       setCallMuted(false);
       setCallHidden(false);
-      const peer = new RTCPeerConnection({ iceServers });
-      pcRef.current = peer;
-      stream.getTracks().forEach((track) => peer.addTrack(track, stream));
-      attachPeerHandlers(peer);
+      lastOfferAtRef.current = 0;
 
       callIdRef.current = incomingCall.callId;
       setCallId(incomingCall.callId);
+      const startedAt = incomingCall.createdAt
+        ? new Date(incomingCall.createdAt).getTime()
+        : Date.now();
+      setCallStartedAt(Number.isFinite(startedAt) ? startedAt : Date.now());
       socketRef.current?.emit('call:accept', { callId: incomingCall.callId });
       socketRef.current?.emit('call:mic-status', {
         callId: incomingCall.callId,
@@ -622,7 +679,85 @@ export function useDuoApp() {
         }`
       );
     }
-  }, [attachPeerHandlers, handleSignal, incomingCall, showError]);
+  }, [ensurePeer, handleSignal, incomingCall, showError]);
+
+  const restoreCallSession = useCallback(
+    async (call: CallRecord) => {
+      const startedAt = new Date(call.startedAt).getTime();
+      callIdRef.current = call.id;
+      setCallId(call.id);
+      setCallStartedAt(Number.isFinite(startedAt) ? startedAt : Date.now());
+
+      if (call.status === 'RINGING') {
+        if (userRef.current?.role === 'GUEST') {
+          const other = call.participants.find(
+            (participant) => participant.userId !== userRef.current?.id
+          );
+          setIncomingCall({
+            callId: call.id,
+            from: other?.user?.username || 'Host',
+            createdAt: call.startedAt
+          });
+          setCallState('RINGING');
+        } else {
+          setCallState('CONNECTING');
+          setRestoredCall(call);
+          try {
+            await ensurePeer();
+          } catch {
+            // Host will retry when the guest accepts.
+          }
+        }
+        return;
+      }
+
+      if (call.status !== 'ACTIVE') {
+        closeLocalCall();
+        return;
+      }
+
+      setCallState('RECONNECTING');
+      setRestoredCall(call);
+      try {
+        await ensurePeer();
+        if (userRef.current?.role === 'HOST' && screenRef.current === 'STUDY') {
+          localStreamRef.current?.getAudioTracks().forEach((track) => {
+            track.enabled = false;
+          });
+          setMicOn(false);
+          socketRef.current?.emit('call:mic-status', { callId: call.id, enabled: false });
+        }
+        socketRef.current?.emit('call:rejoin', { callId: call.id });
+        if (userRef.current?.role === 'HOST') await sendOffer(true);
+      } catch {
+        showNotice(
+          'The call is still connected. Tap the day/night toggle so the browser can restore your microphone.'
+        );
+      }
+    },
+    [closeLocalCall, ensurePeer, sendOffer, showNotice]
+  );
+
+  const resumeCall = useCallback(async () => {
+    const id = callIdRef.current;
+    if (!id) {
+      await startCall();
+      return;
+    }
+    try {
+      await ensurePeer();
+      setCallState('RECONNECTING');
+      socketRef.current?.emit('call:rejoin', { callId: id });
+      if (userRef.current?.role === 'HOST') await sendOffer(true);
+    } catch (cause) {
+      setCallState('RECONNECTING');
+      showError(
+        `Tap the call toggle again to reconnect: ${
+          cause instanceof Error ? cause.message : 'microphone unavailable'
+        }`
+      );
+    }
+  }, [ensurePeer, sendOffer, showError, startCall]);
 
   const declineIncoming = useCallback(() => {
     if (incomingCall) {
@@ -643,51 +778,68 @@ export function useDuoApp() {
     closeLocalCall();
   }, [closeLocalCall]);
 
-  const toggleMic = useCallback(() => {
-    const next = !micOn;
+  const setLocalMic = useCallback((enabled: boolean) => {
     localStreamRef.current?.getAudioTracks().forEach((track) => {
-      track.enabled = next;
+      track.enabled = enabled;
     });
-    setMicOn(next);
+    setMicOn(enabled);
     if (callIdRef.current) {
       socketRef.current?.emit('call:mic-status', {
         callId: callIdRef.current,
-        enabled: next
-      });
-    }
-  }, [micOn]);
-
-  const hideCall = useCallback(() => {
-    setCallHidden(true);
-    setCallMuted(true);
-    localStreamRef.current?.getAudioTracks().forEach((track) => {
-      track.enabled = false;
-    });
-    setMicOn(false);
-    if (callIdRef.current) {
-      socketRef.current?.emit('call:mic-status', {
-        callId: callIdRef.current,
-        enabled: false
+        enabled
       });
     }
   }, []);
 
+  const toggleMic = useCallback(() => {
+    setLocalMic(!micOn);
+  }, [micOn, setLocalMic]);
+
+  const hideCall = useCallback(() => {
+    setCallHidden(true);
+    setCallMuted(true);
+    setLocalMic(false);
+  }, [setLocalMic]);
+
   const returnToCall = useCallback(() => {
     setCallHidden(false);
     setCallMuted(false);
-    if (!micOn) {
-      localStreamRef.current?.getAudioTracks().forEach((track) => {
-        track.enabled = true;
-      });
-      setMicOn(true);
-      if (callIdRef.current) {
-        socketRef.current?.emit('call:mic-status', {
-          callId: callIdRef.current,
-          enabled: true
-        });
-      }
+    if (!micOn) setLocalMic(true);
+  }, [micOn, setLocalMic]);
+
+  const callAction = useCallback(async () => {
+    const state = callStateRef.current;
+    if (state === 'ACTIVE') {
+      toggleMic();
+      return;
     }
-  }, [micOn]);
+    if (state === 'RECONNECTING') {
+      await resumeCall();
+      return;
+    }
+    if (state === 'CONNECTING' || state === 'RINGING') return;
+    await startCall();
+  }, [resumeCall, startCall, toggleMic]);
+
+  const enterStudyMode = useCallback(() => {
+    const inCall =
+      callStateRef.current === 'ACTIVE' ||
+      callStateRef.current === 'RECONNECTING' ||
+      callStateRef.current === 'CONNECTING';
+    // Requirement: Host keeps the call alive but mutes their microphone.
+    if (inCall && userRef.current?.role === 'HOST' && micOn) {
+      setLocalMic(false);
+    }
+    navigate('STUDY');
+  }, [micOn, navigate, setLocalMic]);
+
+  const playRemoteAudio = useCallback(() => {
+    if (!remoteAudioRef.current) return;
+    remoteAudioRef.current.muted = callMuted;
+    void remoteAudioRef.current
+      .play()
+      .catch(() => showNotice('Tap the day/night toggle once, then the timer, to enable call sound.'));
+  }, [callMuted, showNotice]);
 
   const remoteMic = useCallback(
     (enabled: boolean) => {
@@ -697,15 +849,33 @@ export function useDuoApp() {
   );
 
   useEffect(() => {
-    if (callState !== 'ACTIVE') {
+    if (!restoredCall || !user) return;
+    if (resumedCallRef.current === restoredCall.id) return;
+    resumedCallRef.current = restoredCall.id;
+    void restoreCallSession(restoredCall);
+  }, [restoredCall, restoreCallSession, user]);
+
+  useEffect(() => {
+    if (!callStartedAt) {
       if (callTimerRef.current) clearInterval(callTimerRef.current);
       return;
     }
-    callTimerRef.current = setInterval(() => setCallSeconds((value) => value + 1), 1000);
+    const tick = () =>
+      setCallSeconds(Math.max(0, Math.floor((Date.now() - callStartedAt) / 1000)));
+    tick();
+    callTimerRef.current = setInterval(tick, 1000);
     return () => {
       if (callTimerRef.current) clearInterval(callTimerRef.current);
     };
-  }, [callState]);
+  }, [callStartedAt]);
+
+  useEffect(() => {
+    if (callState !== 'RECONNECTING' || !callId) return;
+    const retry = setInterval(() => {
+      socketRef.current?.emit('call:rejoin', { callId: callIdRef.current });
+    }, 5000);
+    return () => clearInterval(retry);
+  }, [callState, callId]);
 
   /* ------------------------------------------------------------------ */
   /* Real-time socket                                                    */
@@ -721,12 +891,15 @@ export function useDuoApp() {
 
     socket.on('connect', () => {
       if (callIdRef.current) {
-        socket.emit('call:reconnect', { callId: callIdRef.current });
+        socket.emit('call:rejoin', { callId: callIdRef.current });
+        if (userRef.current?.role === 'HOST') void sendOffer(true);
       }
     });
 
     socket.on('disconnect', () => {
-      if (callStateRef.current === 'ACTIVE') setCallState('RECONNECTING');
+      if (callStateRef.current === 'ACTIVE' || callStateRef.current === 'CONNECTING') {
+        setCallState('RECONNECTING');
+      }
     });
 
     socket.on('connect_error', () =>
@@ -855,31 +1028,45 @@ export function useDuoApp() {
       void loadNotifications().catch(() => undefined);
     });
 
-    socket.on('call:created', async (payload: { callId: string }) => {
+    socket.on('call:created', async (payload: { callId: string; startedAt?: string }) => {
       callIdRef.current = payload.callId;
       setCallId(payload.callId);
+      lastOfferAtRef.current = 0;
+      const startedAt = payload.startedAt ? new Date(payload.startedAt).getTime() : Date.now();
+      setCallStartedAt(Number.isFinite(startedAt) ? startedAt : Date.now());
+      setCallState('CONNECTING');
       socket.emit('call:mic-status', {
         callId: payload.callId,
         enabled: localStreamRef.current?.getAudioTracks().some((track) => track.enabled) ?? false
       });
-      try {
-        const peer = pcRef.current;
-        if (peer) {
-          const offer = await peer.createOffer();
-          await peer.setLocalDescription(offer);
-          socket.emit('call:signal', {
-            callId: payload.callId,
-            kind: 'offer',
-            signal: offer
-          });
-        }
-      } catch (cause) {
-        console.error('Could not create call offer', cause);
-      }
+      await sendOffer(false);
     });
 
-    socket.on('call:accepted', () => setCallState('ACTIVE'));
+    socket.on('call:accepted', () => {
+      setCallState('ACTIVE');
+      if (!callIdRef.current) return;
+      if (!lastOfferAtRef.current && userRef.current?.role === 'HOST') {
+        void sendOffer(false);
+      }
+    });
+    socket.on('call:peer-rejoined', async (payload: { callId?: string }) => {
+      if (userRef.current?.role !== 'HOST') return;
+      if (payload?.callId) {
+        callIdRef.current = payload.callId;
+        setCallId(payload.callId);
+      }
+      setCallState((current) => (current === 'ACTIVE' ? 'ACTIVE' : 'RECONNECTING'));
+      await sendOffer(true);
+    });
     socket.on('call:status', (payload: any) => {
+      if (payload?.callId) {
+        callIdRef.current = payload.callId;
+        setCallId(payload.callId);
+      }
+      if (payload?.startedAt) {
+        const startedAt = new Date(payload.startedAt).getTime();
+        if (Number.isFinite(startedAt)) setCallStartedAt((current) => current ?? startedAt);
+      }
       if (payload?.status === 'ACTIVE') setCallState('ACTIVE');
       else if (payload?.status === 'RINGING') {
         setCallState((current) => (current === 'RECONNECTING' ? 'CONNECTING' : current));
@@ -936,6 +1123,7 @@ export function useDuoApp() {
     loadNotifications,
     loadPermissions,
     playNotificationSound,
+    sendOffer,
     showBrowserNotification,
     showError,
     showNotice
@@ -1147,6 +1335,7 @@ export function useDuoApp() {
     callMuted,
     callHidden,
     callSeconds,
+    callStartedAt,
     remoteAudioRef,
     setScreen,
     navigate,
@@ -1162,6 +1351,9 @@ export function useDuoApp() {
     toggleMic,
     hideCall,
     returnToCall,
+    callAction,
+    enterStudyMode,
+    playRemoteAudio,
     setCallHidden,
     setCallMuted,
     remoteMic,

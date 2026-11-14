@@ -1,35 +1,9 @@
 'use client';
 
-import { Brain, Inbox, Keyboard, Play, Sparkles, Star } from 'lucide-react';
+import { Inbox, Play, Sparkles } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
+import { gameCatalog } from '@/components/gameCatalog';
 import { Badge, Button, SectionTitle } from '@/components/ui';
-
-const games = [
-  {
-    slug: 'word-typing',
-    name: 'Word Typing',
-    description: 'Words appear on screen. Type them before the clock runs out and watch them break.',
-    icon: <Keyboard size={26} />,
-    tone: 'from-fuchsia-500/20 to-purple-500/5',
-    tag: 'Score · Timer · Accuracy'
-  },
-  {
-    slug: 'falling-words',
-    name: 'Falling Words',
-    description: 'Clear words as they fall. The pace increases, so stay sharp.',
-    icon: <Star size={26} />,
-    tone: 'from-sky-500/20 to-cyan-500/5',
-    tag: 'Lives · Speed · Score'
-  },
-  {
-    slug: 'memory-match',
-    name: 'Color Sequence',
-    description: 'Watch the glowing sequence and repeat it. One wrong tap ends the round.',
-    icon: <Brain size={26} />,
-    tone: 'from-emerald-500/20 to-teal-500/5',
-    tag: 'Rounds · Memory · Score'
-  }
-];
 
 export function GamesScreen() {
   const duo = useDuo();
@@ -51,7 +25,7 @@ export function GamesScreen() {
       />
 
       <div className="grid gap-4 md:grid-cols-3">
-        {games.map((game) => (
+        {gameCatalog.map((game) => (
           <div
             key={game.slug}
             className={`quick-card bg-gradient-to-br ${game.tone} flex flex-col`}

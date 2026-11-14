@@ -83,7 +83,7 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
       from: user.username,
       createdAt: call.startedAt
     });
-    socket.emit('call:created', { callId: call.id });
+    socket.emit('call:created', { callId: call.id, startedAt: call.startedAt });
 
     const timer = setTimeout(async () => {
       const current = await prisma.call.findUnique({ where: { id: call.id } });
@@ -115,8 +115,12 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
       data: { joinedAt: new Date() }
     });
     for (const participant of call.participants) {
-      emitToUser(participant.userId, 'call:accepted', { callId: call.id });
-      emitToUser(participant.userId, 'call:status', { callId: call.id, status: 'ACTIVE' });
+      emitToUser(participant.userId, 'call:accepted', { callId: call.id, startedAt: call.startedAt });
+      emitToUser(participant.userId, 'call:status', {
+        callId: call.id,
+        status: 'ACTIVE',
+        startedAt: call.startedAt
+      });
     }
   });
 
@@ -214,7 +218,61 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
   socket.on('call:reconnect', async (payload: { callId?: string }) => {
     const call = await callFor(payload?.callId);
     if (!call || !isParticipant(call)) return;
-    socket.emit('call:status', { callId: call.id, status: call.status });
+    socket.emit('call:status', {
+      callId: call.id,
+      status: call.status,
+      startedAt: call.startedAt
+    });
+  });
+
+  /**
+   * Used after a refresh, a dropped network or a mobile browser suspending the
+   * tab. The call itself is never ended by a disconnect, so the returning
+   * participant can silently rejoin the same call.
+   */
+  socket.on('call:rejoin', async (payload: { callId?: string }) => {
+    const call = payload?.callId
+      ? await callFor(payload.callId)
+      : await prisma.call.findFirst({
+          where: {
+            status: { in: [CallStatus.RINGING, CallStatus.ACTIVE] },
+            participants: { some: { userId: user.id } }
+          },
+          orderBy: { startedAt: 'desc' },
+          include: {
+            participants: {
+              include: { user: { select: { username: true, role: true } } }
+            }
+          }
+        });
+    if (!call || !isParticipant(call)) {
+      socket.emit('call:status', { status: 'ENDED' });
+      return;
+    }
+    if (call.status !== CallStatus.RINGING && call.status !== CallStatus.ACTIVE) {
+      socket.emit('call:status', { callId: call.id, status: 'ENDED' });
+      return;
+    }
+
+    await prisma.callParticipant.updateMany({
+      where: { callId: call.id, userId: user.id },
+      data: { joinedAt: new Date(), leftAt: null }
+    });
+
+    socket.emit('call:status', {
+      callId: call.id,
+      status: call.status,
+      startedAt: call.startedAt
+    });
+
+    const target = call.participants.find((participant) => participant.userId !== user.id);
+    if (target) {
+      emitToUser(target.userId, 'call:peer-rejoined', {
+        callId: call.id,
+        userId: user.id,
+        username: user.username
+      });
+    }
   });
 
   socket.on('call:signal', async (payload: SignalPayload) => {

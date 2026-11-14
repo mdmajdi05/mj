@@ -42,11 +42,11 @@ export function PromoScreen() {
             <span>PRIVATE DUO</span>
           </div>
           <div className="coupon-body">
-            <p className="eyebrow">Coupon-style access</p>
-            <h1 className="mt-2 text-2xl font-semibold tracking-tight">Unlock Your Chat</h1>
+            <p className="eyebrow">Private access</p>
+            <h1 className="mt-2 text-2xl font-semibold tracking-tight">Enter Secret Code</h1>
             <p className="muted mt-2 text-sm leading-6">
-              Enter the shared access code from Host. This code unlocks the Chat interface; it is
-              separate from your account password.
+              The conversation is hidden from the home screen. Enter the shared code to open it —
+              the code is separate from your account password.
             </p>
 
             <form onSubmit={submit} className="mt-5">
