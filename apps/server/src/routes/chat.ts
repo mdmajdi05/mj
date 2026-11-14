@@ -1,0 +1,989 @@
+import { Router } from 'express';
+import { z } from 'zod';
+import bcrypt from 'bcryptjs';
+import rateLimit from 'express-rate-limit';
+import {
+  ConversationStatus,
+  MessageDestination,
+  PermissionStatus,
+  Role
+} from '@prisma/client';
+import { asyncHandler } from '../lib/async-handler';
+import { HttpError } from '../lib/http-error';
+import { prisma, requireAuth, requireHost, type AuthRequest } from '../middleware/auth';
+import {
+  destinationOf,
+  findActiveConversation,
+  findRestorableConversation,
+  getConversationForNewMessage,
+  getConversationSummary
+} from '../services/conversations';
+import { notifyUser, emitToUser } from '../services/notifier';
+import { onlineUserIds } from '../services/presence';
+
+export const chatRouter = Router();
+chatRouter.use(requireAuth);
+
+const codeLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many code attempts. Please try again in 15 minutes.' }
+});
+
+const screenNames = [
+  'HOME',
+  'CHAT',
+  'STUDY',
+  'GAMES',
+  'GAME',
+  'INBOX',
+  'PROMO',
+  'RESTORE',
+  'SETTINGS',
+  'ADMIN'
+] as const;
+type ScreenName = (typeof screenNames)[number];
+
+const requireChatUnlock = asyncHandler(async (req: AuthRequest, _res, next) => {
+  if (req.user?.role === Role.HOST) return next();
+  const account = await prisma.user.findUnique({
+    where: { id: req.user!.id },
+    select: { chatUnlocked: true }
+  });
+  if (!account?.chatUnlocked) {
+    throw new HttpError(403, 'Unlock Chat with your promo code first.');
+  }
+  return next();
+});
+
+async function otherUser(userId: string) {
+  const other = await prisma.user.findFirst({ where: { id: { not: userId } } });
+  if (!other) throw new HttpError(500, 'The second account is not configured.');
+  return other;
+}
+
+async function audit(actorId: string, action: string, targetId?: string, metadata?: object) {
+  await prisma.adminAuditLog.create({
+    data: { actorId, action, targetId: targetId ?? null, metadata: metadata ?? undefined }
+  });
+}
+
+async function setScreen(userId: string, screen: ScreenName, chatVisible: boolean) {
+  return prisma.screenPreference.upsert({
+    where: { userId },
+    create: { userId, screen, chatVisible },
+    update: { screen, chatVisible }
+  });
+}
+
+async function notifyPreferenceChange(userId: string, activitySharing: boolean | undefined) {
+  if (activitySharing === undefined) return;
+  const other = await otherUser(userId);
+  const existing = await prisma.permission.findFirst({
+    where: { name: 'SHARED_GAME_ACTIVITY', requestedBy: userId }
+  });
+  const data = {
+    status: activitySharing ? PermissionStatus.GRANTED : PermissionStatus.REVOKED,
+    grantedBy: activitySharing ? userId : null,
+    grantedAt: activitySharing ? new Date() : null,
+    rejectedAt: null,
+    revokedAt: activitySharing ? null : new Date()
+  };
+  if (existing) {
+    await prisma.permission.update({ where: { id: existing.id }, data });
+  } else {
+    await prisma.permission.create({
+      data: {
+        name: 'SHARED_GAME_ACTIVITY',
+        description: 'Share game-start activity with the other participant.',
+        requestedBy: userId,
+        ...data
+      }
+    });
+  }
+  await notifyUser({
+    userId: other.id,
+    actorId: userId,
+    eventType: 'PERMISSION_UPDATED',
+    payload: { permission: 'SHARED_GAME_ACTIVITY', enabled: activitySharing }
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Conversation state and messages                                     */
+/* ------------------------------------------------------------------ */
+
+chatRouter.get(
+  '/summary',
+  asyncHandler(async (req: AuthRequest, res) => {
+    const [summary, activeCall] = await Promise.all([
+      getConversationSummary(req.user!.id),
+      prisma.call.findFirst({
+        where: {
+          status: { in: ['RINGING', 'ACTIVE'] },
+          participants: { some: { userId: req.user!.id } }
+        },
+        orderBy: { startedAt: 'desc' },
+        include: { participants: { include: { user: { select: { username: true } } } } }
+      })
+    ]);
+    res.json({
+      ...summary,
+      activeCall,
+      onlineUserIds: onlineUserIds(),
+      chatUnlocked: req.user!.chatUnlocked
+    });
+  })
+);
+
+chatRouter.get(
+  '/messages',
+  requireChatUnlock,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const conversation = await findActiveConversation();
+    if (!conversation) {
+      res.json([]);
+      return;
+    }
+    const destination = req.query.destination === 'GAME'
+      ? MessageDestination.GAME
+      : MessageDestination.CHAT;
+    const rows = await prisma.message.findMany({
+      where: { conversationId: conversation.id, destination, deletedAt: null },
+      orderBy: { createdAt: 'asc' },
+      take: 500,
+      include: { sender: { select: { username: true, role: true } } }
+    });
+    res.json(rows);
+  })
+);
+
+chatRouter.post(
+  '/messages',
+  requireChatUnlock,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({
+        content: z.string().trim().min(1).max(5000),
+        destination: z.nativeEnum(MessageDestination).default(MessageDestination.CHAT)
+      })
+      .safeParse(req.body);
+    if (!parsed.success) throw new HttpError(400, 'Invalid message');
+
+    const other = await otherUser(req.user!.id);
+    const destination = parsed.data.destination;
+
+    if (destination === MessageDestination.GAME) {
+      const message = await prisma.gameMessage.create({
+        data: { senderId: req.user!.id, content: parsed.data.content },
+        include: { sender: { select: { username: true, role: true } } }
+      });
+      for (const id of [req.user!.id, other.id]) emitToUser(id, 'game:message:new', message);
+      await notifyUser({
+        userId: other.id,
+        actorId: req.user!.id,
+        eventType: 'GAME_MESSAGE',
+        payload: { gameMessageId: message.id },
+        butterfly: true,
+        push: true,
+        dedupeKey: `game:${message.id}:${other.id}`
+      });
+      res.status(201).json(message);
+      return;
+    }
+
+    const conversation = await getConversationForNewMessage().catch((error) => {
+      if ((error as Error & { code?: string }).code === 'CONVERSATION_ARCHIVED') {
+        throw new HttpError(409, 'Conversation is archived. Use RESTORE to reopen it.');
+      }
+      throw error;
+    });
+    const message = await prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        senderId: req.user!.id,
+        content: parsed.data.content,
+        destination: MessageDestination.CHAT
+      },
+      include: { sender: { select: { username: true, role: true } } }
+    });
+    for (const id of [req.user!.id, other.id]) emitToUser(id, 'message:new', message);
+    await notifyUser({
+      userId: other.id,
+      actorId: req.user!.id,
+      eventType: 'NEW_MESSAGE',
+      payload: { messageId: message.id },
+      butterfly: true,
+      push: true,
+      dedupeKey: `message:${message.id}:${other.id}`
+    });
+    res.status(201).json(message);
+  })
+);
+
+chatRouter.delete(
+  '/messages/:id',
+  asyncHandler(async (req: AuthRequest, res) => {
+    const message = await prisma.message.findUnique({ where: { id: req.params.id } });
+    if (!message || message.deletedAt) throw new HttpError(404, 'Message not found');
+    if (req.user!.role !== Role.HOST && message.senderId !== req.user!.id) {
+      throw new HttpError(403, 'You can delete only your own messages');
+    }
+
+    await prisma.message.update({
+      where: { id: message.id },
+      data: { deletedAt: new Date(), content: '[deleted]' }
+    });
+
+    if (req.user!.role === Role.HOST) {
+      await audit(req.user!.id, 'DELETE_MESSAGE', message.id);
+    }
+
+    const other = await otherUser(req.user!.id);
+    for (const id of [req.user!.id, other.id]) {
+      emitToUser(id, 'message:deleted', { id: message.id });
+    }
+    res.status(204).end();
+  })
+);
+
+chatRouter.delete(
+  '/history',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const conversations = await prisma.conversation.findMany({
+      where: { status: { in: [ConversationStatus.ACTIVE, ConversationStatus.ARCHIVED] } }
+    });
+    const ids = conversations.map((conversation) => conversation.id);
+
+    if (ids.length > 0) {
+      await prisma.$transaction([
+        prisma.message.deleteMany({ where: { conversationId: { in: ids } } }),
+        prisma.conversation.updateMany({
+          where: { id: { in: ids } },
+          data: { status: ConversationStatus.DELETED }
+        }),
+        prisma.adminAuditLog.create({
+          data: {
+            actorId: req.user!.id,
+            action: 'DELETE_CONVERSATION_HISTORY',
+            metadata: { conversationCount: ids.length }
+          }
+        })
+      ]);
+    }
+
+    const other = await otherUser(req.user!.id);
+    for (const id of [req.user!.id, other.id]) {
+      emitToUser(id, 'chat:deleted', { permanently: true });
+    }
+    res.status(204).end();
+  })
+);
+
+/* ------------------------------------------------------------------ */
+/* Screen, hide, archive, restore, promo                               */
+/* ------------------------------------------------------------------ */
+
+chatRouter.get(
+  '/screen',
+  asyncHandler(async (req: AuthRequest, res) => {
+    const preference = await prisma.screenPreference.findUnique({
+      where: { userId: req.user!.id }
+    });
+    res.json(preference ?? { screen: 'HOME', chatVisible: true });
+  })
+);
+
+chatRouter.post(
+  '/screen',
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z.object({ screen: z.enum(screenNames) }).safeParse(req.body);
+    if (!parsed.success) throw new HttpError(400, 'Invalid screen');
+    const screen = parsed.data.screen;
+
+    if (screen === 'ADMIN' && req.user!.role !== Role.HOST) {
+      throw new HttpError(403, 'Host access only');
+    }
+    if (screen === 'CHAT' && req.user!.role !== Role.HOST) {
+      const account = await prisma.user.findUnique({
+        where: { id: req.user!.id },
+        select: { chatUnlocked: true }
+      });
+      if (!account?.chatUnlocked) throw new HttpError(403, 'Unlock Chat first.');
+    }
+
+    const preference = await setScreen(req.user!.id, screen, screen === 'CHAT');
+    res.json(preference);
+  })
+);
+
+chatRouter.post(
+  '/hide',
+  asyncHandler(async (req: AuthRequest, res) => {
+    await setScreen(req.user!.id, 'STUDY', false);
+    res.json({ ok: true });
+  })
+);
+
+chatRouter.post(
+  '/open',
+  requireChatUnlock,
+  asyncHandler(async (req: AuthRequest, res) => {
+    await setScreen(req.user!.id, 'CHAT', true);
+    res.json({ ok: true });
+  })
+);
+
+chatRouter.post(
+  '/archive',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const conversation = await findActiveConversation();
+    if (!conversation) throw new HttpError(404, 'There is no active conversation to archive.');
+    await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { status: ConversationStatus.ARCHIVED }
+    });
+    await prisma.archivedConversation.upsert({
+      where: { conversationId: conversation.id },
+      create: { conversationId: conversation.id, archivedBy: req.user!.id },
+      update: { archivedAt: new Date(), archivedBy: req.user!.id }
+    });
+    await audit(req.user!.id, 'ARCHIVE_CONVERSATION', conversation.id);
+    const other = await otherUser(req.user!.id);
+    for (const id of [req.user!.id, other.id]) {
+      emitToUser(id, 'chat:state', { status: ConversationStatus.ARCHIVED });
+    }
+    res.json({ ok: true });
+  })
+);
+
+chatRouter.post(
+  '/restore',
+  codeLimit,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const command = String(req.body?.command ?? '').trim().toUpperCase();
+    if (command !== 'RESTORE') throw new HttpError(400, 'Enter RESTORE');
+
+    const conversation = await findRestorableConversation();
+    if (!conversation) {
+      await prisma.restoreEvent.create({
+        data: { userId: req.user!.id, result: 'UNAVAILABLE' }
+      });
+      throw new HttpError(404, 'Previous conversation is no longer available.');
+    }
+
+    if (conversation.status === ConversationStatus.ARCHIVED) {
+      await prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { status: ConversationStatus.ACTIVE }
+      });
+    }
+    await prisma.user.update({
+      where: { id: req.user!.id },
+      data: { chatUnlocked: true }
+    });
+    await setScreen(req.user!.id, 'CHAT', true);
+    await prisma.restoreEvent.create({
+      data: { userId: req.user!.id, result: 'RESTORED' }
+    });
+    res.json({ ok: true, conversationId: conversation.id });
+  })
+);
+
+chatRouter.post(
+  '/promo/validate',
+  codeLimit,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const code = String(req.body?.code ?? '').trim();
+    if (!code || code.length > 100) throw new HttpError(400, 'Enter a valid access code');
+
+    const rows = await prisma.accessCode.findMany({
+      where: { purpose: 'PROMO', enabled: true }
+    });
+    let valid = false;
+    for (const row of rows) {
+      if (await bcrypt.compare(code, row.codeHash)) {
+        valid = true;
+        break;
+      }
+    }
+    if (!valid) throw new HttpError(403, 'Incorrect access code');
+
+    await prisma.user.update({
+      where: { id: req.user!.id },
+      data: { chatUnlocked: true }
+    });
+    await setScreen(req.user!.id, 'CHAT', true);
+    res.json({ ok: true, unlocked: true });
+  })
+);
+
+/* ------------------------------------------------------------------ */
+/* Game inbox                                                          */
+/* ------------------------------------------------------------------ */
+
+chatRouter.get(
+  '/inbox',
+  asyncHandler(async (req: AuthRequest, res) => {
+    const rows = await prisma.gameMessage.findMany({
+      orderBy: { createdAt: 'asc' },
+      include: { sender: { select: { username: true, role: true } } },
+      take: 500
+    });
+    res.json(rows);
+  })
+);
+
+chatRouter.post(
+  '/inbox/read',
+  asyncHandler(async (req: AuthRequest, res) => {
+    await prisma.gameMessage.updateMany({
+      where: { readAt: null, senderId: { not: req.user!.id } },
+      data: { readAt: new Date() }
+    });
+    res.json({ ok: true });
+  })
+);
+
+chatRouter.post(
+  '/inbox/:id/read',
+  asyncHandler(async (req: AuthRequest, res) => {
+    await prisma.gameMessage.updateMany({
+      where: { id: req.params.id, senderId: { not: req.user!.id } },
+      data: { readAt: new Date() }
+    });
+    res.json({ ok: true });
+  })
+);
+
+/* ------------------------------------------------------------------ */
+/* Preferences, notifications, permissions, call history               */
+/* ------------------------------------------------------------------ */
+
+chatRouter.get(
+  '/preferences',
+  asyncHandler(async (req: AuthRequest, res) => {
+    const [notifications, userPreferences] = await Promise.all([
+      prisma.notificationPreference.findUnique({ where: { userId: req.user!.id } }),
+      prisma.userPreference.findUnique({ where: { userId: req.user!.id } })
+    ]);
+    res.json({
+      butterfly: notifications?.butterfly ?? true,
+      sound: notifications?.sound ?? false,
+      browser: notifications?.browser ?? false,
+      activitySharing: notifications?.activitySharing ?? false,
+      reducedMotion: userPreferences?.reducedMotion ?? false
+    });
+  })
+);
+
+chatRouter.post(
+  '/preferences',
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({
+        butterfly: z.boolean().optional(),
+        sound: z.boolean().optional(),
+        browser: z.boolean().optional(),
+        activitySharing: z.boolean().optional(),
+        reducedMotion: z.boolean().optional()
+      })
+      .safeParse(req.body);
+    if (!parsed.success) throw new HttpError(400, 'Invalid preferences');
+
+    const { reducedMotion, ...notificationPreferences } = parsed.data;
+    if (Object.keys(notificationPreferences).length > 0) {
+      await prisma.notificationPreference.upsert({
+        where: { userId: req.user!.id },
+        create: { userId: req.user!.id, ...notificationPreferences },
+        update: notificationPreferences
+      });
+    }
+    if (reducedMotion !== undefined) {
+      await prisma.userPreference.upsert({
+        where: { userId: req.user!.id },
+        create: { userId: req.user!.id, reducedMotion },
+        update: { reducedMotion }
+      });
+    }
+    if (notificationPreferences.activitySharing !== undefined) {
+      await notifyPreferenceChange(req.user!.id, notificationPreferences.activitySharing);
+    }
+    res.json({ ok: true });
+  })
+);
+
+chatRouter.get(
+  '/notifications',
+  asyncHandler(async (req: AuthRequest, res) => {
+    const rows = await prisma.notification.findMany({
+      where: { userId: req.user!.id },
+      include: { actor: { select: { username: true, role: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 100
+    });
+    res.json(rows);
+  })
+);
+
+chatRouter.post(
+  '/notifications/read',
+  asyncHandler(async (req: AuthRequest, res) => {
+    await prisma.notification.updateMany({
+      where: { userId: req.user!.id, readAt: null },
+      data: { readAt: new Date() }
+    });
+    emitToUser(req.user!.id, 'notification:count', { count: 0 });
+    res.json({ ok: true });
+  })
+);
+
+chatRouter.get(
+  '/permissions',
+  asyncHandler(async (req: AuthRequest, res) => {
+    const rows = await prisma.permission.findMany({
+      include: {
+        requester: { select: { username: true, role: true } },
+        grantor: { select: { username: true, role: true } }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json(rows);
+  })
+);
+
+chatRouter.post(
+  '/permissions',
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({
+        name: z.enum(['REMOTE_MIC_CONTROL', 'SHARED_GAME_ACTIVITY', 'CALL_CONTROLS']),
+        description: z.string().max(300).default('Permission requested by participant'),
+        requestedBySelf: z.boolean().default(true)
+      })
+      .safeParse(req.body);
+    if (!parsed.success) throw new HttpError(400, 'Invalid permission');
+
+    const other = await otherUser(req.user!.id);
+    const requesterId = parsed.data.requestedBySelf ? req.user!.id : other.id;
+
+    const existing = await prisma.permission.findFirst({
+      where: {
+        name: parsed.data.name,
+        requestedBy: requesterId,
+        status: { in: [PermissionStatus.REQUESTED, PermissionStatus.GRANTED] }
+      }
+    });
+    if (existing) {
+      res.status(200).json(existing);
+      return;
+    }
+
+    const selfGranted = !parsed.data.requestedBySelf;
+    const item = await prisma.permission.create({
+      data: {
+        name: parsed.data.name,
+        description: parsed.data.description,
+        requestedBy: requesterId,
+        status: selfGranted ? PermissionStatus.GRANTED : PermissionStatus.REQUESTED,
+        grantedBy: selfGranted ? req.user!.id : null,
+        grantedAt: selfGranted ? new Date() : null
+      }
+    });
+
+    const target = other;
+    if (selfGranted) {
+      await notifyUser({
+        userId: target.id,
+        actorId: req.user!.id,
+        eventType: 'PERMISSION_GRANTED',
+        payload: { permission: item.name, grantedBy: req.user!.username }
+      });
+    } else {
+      await notifyUser({
+        userId: target.id,
+        actorId: req.user!.id,
+        eventType: 'PERMISSION_REQUEST',
+        payload: { permission: item.name, permissionId: item.id }
+      });
+    }
+    emitToUser(target.id, selfGranted ? 'permission:updated' : 'permission:new', {
+      permissionId: item.id
+    });
+    emitToUser(req.user!.id, 'permission:updated', { permissionId: item.id });
+    res.status(201).json(item);
+  })
+);
+
+chatRouter.post(
+  '/permissions/:id/:action',
+  asyncHandler(async (req: AuthRequest, res) => {
+    const action = req.params.action;
+    if (!['approve', 'reject', 'revoke'].includes(action)) {
+      throw new HttpError(400, 'Invalid action');
+    }
+    const item = await prisma.permission.findUnique({ where: { id: req.params.id } });
+    if (!item) throw new HttpError(404, 'Permission not found');
+
+    if (action === 'approve' || action === 'reject') {
+      if (item.requestedBy === req.user!.id) {
+        throw new HttpError(403, 'The requester cannot approve their own permission.');
+      }
+      const status = action === 'approve' ? PermissionStatus.GRANTED : PermissionStatus.REJECTED;
+      const updated = await prisma.permission.update({
+        where: { id: item.id },
+        data: {
+          status,
+          grantedBy: action === 'approve' ? req.user!.id : null,
+          grantedAt: action === 'approve' ? new Date() : null,
+          rejectedAt: action === 'reject' ? new Date() : null,
+          revokedAt: null
+        }
+      });
+      await audit(req.user!.id, `PERMISSION_${action.toUpperCase()}`, item.id);
+      await notifyUser({
+        userId: item.requestedBy,
+        actorId: req.user!.id,
+        eventType: `PERMISSION_${action.toUpperCase()}`,
+        payload: { permission: item.name, status }
+      });
+      emitToUser(item.requestedBy, 'permission:updated', { permissionId: item.id });
+      emitToUser(req.user!.id, 'permission:updated', { permissionId: item.id });
+      res.json(updated);
+      return;
+    }
+
+    if (
+      item.requestedBy !== req.user!.id &&
+      item.grantedBy !== req.user!.id &&
+      req.user!.role !== Role.HOST
+    ) {
+      throw new HttpError(403, 'Only the requester, grantor or Host may revoke.');
+    }
+    const updated = await prisma.permission.update({
+      where: { id: item.id },
+      data: { status: PermissionStatus.REVOKED, revokedAt: new Date() }
+    });
+    await audit(req.user!.id, 'PERMISSION_REVOKE', item.id);
+    const other = await otherUser(req.user!.id);
+    await notifyUser({
+      userId: other.id,
+      actorId: req.user!.id,
+      eventType: 'PERMISSION_REVOKED',
+      payload: { permission: item.name }
+    });
+    emitToUser(other.id, 'permission:updated', { permissionId: item.id });
+    emitToUser(req.user!.id, 'permission:updated', { permissionId: item.id });
+    res.json(updated);
+  })
+);
+
+chatRouter.get(
+  '/calls',
+  asyncHandler(async (req: AuthRequest, res) => {
+    const calls = await prisma.call.findMany({
+      where: { participants: { some: { userId: req.user!.id } } },
+      include: {
+        participants: {
+          include: { user: { select: { username: true, role: true } } }
+        }
+      },
+      orderBy: { startedAt: 'desc' },
+      take: 50
+    });
+    res.json(calls);
+  })
+);
+
+/* ------------------------------------------------------------------ */
+/* Host administration                                                 */
+/* ------------------------------------------------------------------ */
+
+chatRouter.get(
+  '/admin/promo/status',
+  requireHost,
+  asyncHandler(async (_req, res) => {
+    const code = await prisma.accessCode.findFirst({
+      where: { purpose: 'PROMO', enabled: true },
+      select: { enabled: true, updatedAt: true }
+    });
+    res.json({
+      enabled: Boolean(code),
+      updatedAt: code?.updatedAt ?? null,
+      rateLimit: { attempts: 8, windowMinutes: 15 }
+    });
+  })
+);
+
+chatRouter.post(
+  '/admin/promo',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const code = String(req.body?.code ?? '').trim();
+    if (code.length < 6 || code.length > 100) {
+      throw new HttpError(400, 'Code must be 6–100 characters');
+    }
+    await prisma.accessCode.updateMany({
+      where: { purpose: 'PROMO' },
+      data: { enabled: false }
+    });
+    await prisma.accessCode.create({
+      data: { purpose: 'PROMO', codeHash: await bcrypt.hash(code, 12) }
+    });
+    await audit(req.user!.id, 'ROTATE_PROMO_CODE');
+    res.json({ ok: true });
+  })
+);
+
+chatRouter.post(
+  '/admin/promo/disable',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    await prisma.accessCode.updateMany({
+      where: { purpose: 'PROMO' },
+      data: { enabled: false }
+    });
+    await audit(req.user!.id, 'DISABLE_PROMO_CODE');
+    res.json({ ok: true });
+  })
+);
+
+chatRouter.get(
+  '/admin/messages',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const query = String(req.query.q ?? '').slice(0, 100);
+    const rows = await prisma.message.findMany({
+      where: {
+        deletedAt: null,
+        ...(query ? { content: { contains: query, mode: 'insensitive' as const } } : {})
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 250,
+      include: {
+        sender: { select: { username: true, role: true } },
+        conversation: { select: { status: true } }
+      }
+    });
+    res.json(rows);
+  })
+);
+
+chatRouter.get(
+  '/admin/game-messages',
+  requireHost,
+  asyncHandler(async (_req, res) => {
+    const rows = await prisma.gameMessage.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 250,
+      include: { sender: { select: { username: true, role: true } } }
+    });
+    res.json(rows);
+  })
+);
+
+chatRouter.delete(
+  '/admin/game-messages/:id',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    await prisma.gameMessage.deleteMany({ where: { id: req.params.id } });
+    await audit(req.user!.id, 'DELETE_GAME_MESSAGE', req.params.id);
+    res.status(204).end();
+  })
+);
+
+chatRouter.delete(
+  '/admin/game-messages',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const result = await prisma.gameMessage.deleteMany({});
+    await audit(req.user!.id, 'DELETE_ALL_GAME_MESSAGES', undefined, {
+      count: result.count
+    });
+    const other = await otherUser(req.user!.id);
+    for (const id of [req.user!.id, other.id]) {
+      emitToUser(id, 'game:messages:cleared', { count: result.count });
+    }
+    res.json({ ok: true, count: result.count });
+  })
+);
+
+chatRouter.get(
+  '/admin/game-sessions',
+  requireHost,
+  asyncHandler(async (_req, res) => {
+    const rows = await prisma.gameSession.findMany({
+      include: {
+        game: { select: { name: true, slug: true } }
+      },
+      orderBy: { startedAt: 'desc' },
+      take: 100
+    });
+    res.json(rows);
+  })
+);
+
+chatRouter.get(
+  '/admin/calls',
+  requireHost,
+  asyncHandler(async (_req, res) => {
+    const rows = await prisma.call.findMany({
+      include: {
+        participants: {
+          include: { user: { select: { username: true, role: true } } }
+        }
+      },
+      orderBy: { startedAt: 'desc' },
+      take: 100
+    });
+    res.json(rows);
+  })
+);
+
+chatRouter.post(
+  '/admin/calls/:id/end',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const call = await prisma.call.findUnique({
+      where: { id: req.params.id },
+      include: { participants: true }
+    });
+    if (!call) throw new HttpError(404, 'Call not found');
+    await prisma.call.update({
+      where: { id: call.id },
+      data: { status: 'ENDED', endedAt: new Date() }
+    });
+    await audit(req.user!.id, 'END_AUDIO_CALL', call.id);
+    for (const participant of call.participants) {
+      emitToUser(participant.userId, 'call:ended', { callId: call.id, reason: 'host-ended' });
+    }
+    res.json({ ok: true });
+  })
+);
+
+chatRouter.get(
+  '/admin/notifications',
+  requireHost,
+  asyncHandler(async (_req, res) => {
+    const rows = await prisma.notification.findMany({
+      include: { actor: { select: { username: true, role: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 200
+    });
+    res.json(rows);
+  })
+);
+
+chatRouter.get(
+  '/admin/audit',
+  requireHost,
+  asyncHandler(async (_req, res) => {
+    const rows = await prisma.adminAuditLog.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 200
+    });
+    res.json(rows);
+  })
+);
+
+chatRouter.get(
+  '/admin/activity',
+  requireHost,
+  asyncHandler(async (_req, res) => {
+    const [notifications, calls, logs, permissions, gameSessions] = await Promise.all([
+      prisma.notification.findMany({
+        include: { actor: { select: { username: true, role: true } } },
+        orderBy: { createdAt: 'desc' },
+        take: 100
+      }),
+      prisma.call.findMany({
+        include: {
+          participants: {
+            include: { user: { select: { username: true, role: true } } }
+          }
+        },
+        orderBy: { startedAt: 'desc' },
+        take: 50
+      }),
+      prisma.adminAuditLog.findMany({ orderBy: { createdAt: 'desc' }, take: 100 }),
+      prisma.permission.findMany({
+        include: {
+          requester: { select: { username: true } },
+          grantor: { select: { username: true } }
+        },
+        orderBy: { createdAt: 'desc' }
+      }),
+      prisma.gameSession.findMany({
+        include: { game: { select: { name: true, slug: true } } },
+        orderBy: { startedAt: 'desc' },
+        take: 50
+      })
+    ]);
+    res.json({
+      notifications,
+      calls,
+      logs,
+      permissions,
+      gameSessions,
+      presence: onlineUserIds()
+    });
+  })
+);
+
+/* ------------------------------------------------------------------ */
+/* Web Push                                                            */
+/* ------------------------------------------------------------------ */
+
+chatRouter.get('/push/public-key', (_req, res) => {
+  res.json({ publicKey: process.env.VAPID_PUBLIC_KEY || null });
+});
+
+chatRouter.post(
+  '/push/subscribe',
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({
+        endpoint: z.string().url().max(3000),
+        keys: z.object({
+          p256dh: z.string().min(1).max(500),
+          auth: z.string().min(1).max(500)
+        })
+      })
+      .safeParse(req.body);
+    if (!parsed.success) throw new HttpError(400, 'Invalid push subscription');
+
+    await prisma.pushSubscription.upsert({
+      where: { endpoint: parsed.data.endpoint },
+      create: {
+        userId: req.user!.id,
+        endpoint: parsed.data.endpoint,
+        p256dh: parsed.data.keys.p256dh,
+        auth: parsed.data.keys.auth
+      },
+      update: {
+        userId: req.user!.id,
+        p256dh: parsed.data.keys.p256dh,
+        auth: parsed.data.keys.auth
+      }
+    });
+    res.json({ ok: true });
+  })
+);
+
+chatRouter.delete(
+  '/push/subscribe',
+  asyncHandler(async (req: AuthRequest, res) => {
+    const endpoint = String(req.body?.endpoint ?? '');
+    await prisma.pushSubscription.deleteMany({
+      where: { userId: req.user!.id, ...(endpoint ? { endpoint } : {}) }
+    });
+    res.status(204).end();
+  })
+);
+
+export const _destinationOf = destinationOf;
+export const _screenNames = screenNames;

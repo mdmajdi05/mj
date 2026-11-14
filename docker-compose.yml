@@ -1,0 +1,115 @@
+# Fixed project name keeps networks and volumes unique to this stack. It also
+# lets the deploy/uninstall scripts target only Private Duo resources.
+name: private-duo
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: private_duo
+      POSTGRES_USER: duo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:${DUO_DB_PORT:-5432}:5432"
+    volumes:
+      - duo_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U duo -d private_duo"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    stop_grace_period: 30s
+    networks: [private]
+
+  turn:
+    image: coturn/coturn:4.18
+    restart: unless-stopped
+    network_mode: host
+    command: ["-n", "--log-file=stdout", "--realm=${TURN_REALM}", "--lt-cred-mech", "--fingerprint", "--user=${TURN_USERNAME}:${TURN_PASSWORD}", "--listening-port=${TURN_PORT:-3478}", "--min-port=${TURN_MIN_PORT:-49160}", "--max-port=${TURN_MAX_PORT:-49200}", "--external-ip=${TURN_EXTERNAL_IP}"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.server
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://duo:${POSTGRES_PASSWORD}@db:5432/private_duo?schema=public
+      WEB_ORIGIN: ${WEB_ORIGIN}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    stop_grace_period: 30s
+    networks: [private, edge]
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+        NEXT_PUBLIC_TURN_URL: ${NEXT_PUBLIC_TURN_URL}
+        NEXT_PUBLIC_TURN_USERNAME: ${NEXT_PUBLIC_TURN_USERNAME}
+        NEXT_PUBLIC_TURN_PASSWORD: ${NEXT_PUBLIC_TURN_PASSWORD}
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+    depends_on: [api]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000 >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    stop_grace_period: 30s
+    networks: [edge]
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports: ["127.0.0.1:${DUO_HTTP_PORT:-8085}:80"]
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certbot/www:/var/www/certbot:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+    depends_on: [web, api]
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    networks: [edge]
+
+volumes:
+  duo_db:
+
+networks:
+  private:
+    internal: true
+  edge:

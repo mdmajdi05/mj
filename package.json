@@ -1,0 +1,23 @@
+{
+  "name": "private-duo",
+  "private": true,
+  "workspaces": [
+    "apps/web",
+    "apps/server"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev -w @private-duo/server\" \"npm run dev -w @private-duo/web\"",
+    "build": "npm run build -w @private-duo/server && npm run build -w @private-duo/web",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:seed": "tsx prisma/seed.ts",
+    "test:smoke": "node scripts/smoke-test.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "prisma": "^6.19.0",
+    "tsx": "^4.19.3",
+    "socket.io-client": "^4.8.1",
+    "dotenv": "^16.4.7"
+  }
+}

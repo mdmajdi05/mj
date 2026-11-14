@@ -1,0 +1,16 @@
+node_modules
+.next
+dist
+.env
+.env.*.local
+coverage
+*.log
+
+.env.local
+backups/
+.deploy-backups/
+.private-duo-passwords-set
+certbot/conf/
+certbot/www/
+certbot/work/
+certbot/logs/
