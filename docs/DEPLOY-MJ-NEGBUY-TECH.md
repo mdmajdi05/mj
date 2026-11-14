@@ -73,6 +73,46 @@ removes only resources carrying the Private Duo marker.
 
    Then open `https://mj.negbuy.tech` and log in as `host` or `guest`.
 
+## This VPS: existing Dockerized Nginx
+
+Ports 80/443 are owned by the container `nginx` (`nginx:1.28-alpine`) on the
+Docker network `frontend`, not by host Nginx. Its layout is:
+
+- vhosts: `/opt/docker/services/nginx/conf.d/*.conf`
+- certificates: `/opt/docker/services/nginx/certs` (Certbot layout)
+- ACME webroot: `/opt/docker/services/nginx/www` → `/var/www/html`
+
+Private Duo joins the same network under the alias `private-duo`; the existing
+proxy forwards the new hostname to `http://private-duo:80`. Nothing else is
+changed.
+
+```bash
+cd /opt/docker/apps/mj
+git pull
+sudo bash scripts/deploy-production.sh \
+  --domain mj.negbuy.tech --email mdmajdi05@gmail.com \
+  --skip-nginx --proxy-network frontend
+```
+
+Issue the certificate (the default vhost already serves the ACME webroot):
+
+```bash
+sudo certbot certonly --webroot \
+  -w /opt/docker/services/nginx/www \
+  --config-dir /opt/docker/services/nginx/certs \
+  --work-dir /opt/docker/services/nginx/certs/work \
+  --logs-dir /opt/docker/services/nginx/certs/logs \
+  -d mj.negbuy.tech --email mdmajdi05@gmail.com \
+  --agree-tos --no-eff-email --non-interactive
+```
+
+Create `/opt/docker/services/nginx/conf.d/mj.negbuy.tech.conf` from
+`deploy/external-proxy-vhost.example.conf` (replace `__DOMAIN__`), then:
+
+```bash
+docker exec nginx nginx -t && docker exec nginx nginx -s reload
+```
+
 ## Notes
 
 - If certificate issuance fails, the site stays on HTTP for that hostname only
