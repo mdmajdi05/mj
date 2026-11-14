@@ -1,0 +1,28 @@
+# Optional override for VPS setups where ports 80/443 are owned by an existing
+# containerized reverse proxy instead of host Nginx.
+#
+# The internal Private Duo Nginx joins the proxy's Docker network under the
+# stable alias "private-duo". The existing proxy then forwards
+# https://<domain> to http://private-duo:80. No other container, network or
+# volume is modified.
+#
+# Enable with:
+#   docker compose -f docker-compose.yml \
+#     -f deploy/docker-compose.external-proxy.yml up -d
+#
+# or via the deploy script:
+#   sudo bash scripts/deploy-production.sh --domain <domain> \
+#     --skip-nginx --proxy-network frontend
+
+services:
+  nginx:
+    networks:
+      edge:
+      proxy:
+        aliases:
+          - private-duo
+
+networks:
+  proxy:
+    external: true
+    name: ${DUO_PROXY_NETWORK:-frontend}

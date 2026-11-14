@@ -32,6 +32,7 @@ NO_HTTPS=0
 SKIP_NGINX=0
 FORCE_PASSWORDS=0
 COMPOSE_PROJECT="private-duo"
+PROXY_NETWORK="${DUO_PROXY_NETWORK:-}"
 
 log() { printf '\n[private-duo] %s\n' "$*"; }
 info() { printf '  %s\n' "$*"; }
@@ -50,12 +51,15 @@ Options:
   --change-passwords    Ask for new Host/Guest passwords on an existing install.
   --no-https            Serve over plain HTTP (no certificate). Not recommended.
   --skip-nginx          Do not touch host Nginx or certificates; use with care.
+  --proxy-network <n>   Attach the internal Nginx to an existing external Docker
+                        network so a containerized reverse proxy can reach it.
   --help                Show this help.
 
 Environment alternatives:
   HOST_PASSWORD / GUEST_PASSWORD   Non-interactive password input.
   DUO_DOMAIN / DUO_EMAIL           Same as --domain / --email.
   DUO_PUBLIC_IP                    Skip public-IP detection.
+  DUO_PROXY_NETWORK                Same as --proxy-network.
 
 Passwords are never written to .env, command-line arguments or log output.
 EOF
@@ -73,6 +77,9 @@ for ((i = 1; i <= $#; i++)); do
     --change-passwords) FORCE_PASSWORDS=1 ;;
     --no-https) NO_HTTPS=1 ;;
     --skip-nginx) SKIP_NGINX=1 ;;
+    --proxy-network)
+      i=$((i + 1)); [ $i -le $# ] || die "--proxy-network needs a value"; PROXY_NETWORK="${!i}" ;;
+    --proxy-network=*) PROXY_NETWORK="${arg#*=}" ;;
     --help|-h) usage; exit 0 ;;
     *) die "Unknown option: $arg (use --help)" ;;
   esac
@@ -91,14 +98,23 @@ if [ ! -f "$APP_DIR/docker-compose.yml" ] || [ ! -f "$APP_DIR/prisma/schema.pris
 fi
 
 compose() {
+  local files=(-f "$APP_DIR/docker-compose.yml")
+  if [ -n "$PROXY_NETWORK" ]; then
+    files+=(-f "$APP_DIR/deploy/docker-compose.external-proxy.yml")
+  fi
   docker compose --project-name "$COMPOSE_PROJECT" \
-    --project-directory "$APP_DIR" -f "$APP_DIR/docker-compose.yml" "$@"
+    --project-directory "$APP_DIR" "${files[@]}" "$@"
 }
 
 get_env() {
   [ -f "$ENV_FILE" ] || return 0
   sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1
 }
+
+# Reuse the external proxy network from a previous run unless overridden.
+if [ -z "$PROXY_NETWORK" ]; then
+  PROXY_NETWORK="$(get_env DUO_PROXY_NETWORK)"
+fi
 
 set_env_value() {
   local key="$1" value="$2"
@@ -184,6 +200,13 @@ require_cmd openssl
 require_cmd curl
 require_cmd ss
 ensure_docker
+
+if [ -n "$PROXY_NETWORK" ]; then
+  [ -f "$APP_DIR/deploy/docker-compose.external-proxy.yml" ] || \
+    die "deploy/docker-compose.external-proxy.yml is missing."
+  docker network inspect "$PROXY_NETWORK" >/dev/null 2>&1 || \
+    die "External Docker network '$PROXY_NETWORK' does not exist. Check 'docker network ls'."
+fi
 
 # ---------------------------------------------------------------------------
 # Public IP, domain and email
@@ -462,6 +485,9 @@ umask 077
   printf 'TURN_MAX_PORT=%s\n' "$TURN_MAX_PORT"
   printf 'DUO_HTTP_PORT=%s\n' "$DUO_HTTP_PORT"
   printf 'DUO_DB_PORT=%s\n' "$DUO_DB_PORT"
+  if [ -n "$PROXY_NETWORK" ]; then
+    printf 'DUO_PROXY_NETWORK=%s\n' "$PROXY_NETWORK"
+  fi
   printf 'VAPID_SUBJECT=mailto:%s\n' "$EMAIL"
   printf 'VAPID_PUBLIC_KEY=%s\n' "$VAPID_PUBLIC_KEY"
   printf 'VAPID_PRIVATE_KEY=%s\n' "$VAPID_PRIVATE_KEY"
@@ -553,9 +579,12 @@ else
       log "Installing host Nginx (no existing web server detected on port 80)..."
       apt-get update -y >/dev/null
       apt-get install -y nginx >/dev/null
-      systemctl enable --now nginx >/dev/null
+      systemctl enable --now nginx >/dev/null 2>&1 || true
     fi
-    systemctl is-active --quiet nginx || systemctl start nginx
+    systemctl is-active --quiet nginx || systemctl start nginx >/dev/null 2>&1 || true
+    if ! systemctl is-active --quiet nginx; then
+      die "Host Nginx is not running and could not be started. Port 80/443 are probably served by a containerized reverse proxy (Nginx Proxy Manager, Traefik, Coolify, Dokploy, etc.). Nothing was changed. Re-run with --skip-nginx and add $DOMAIN as a proxy host pointing to http://127.0.0.1:$DUO_HTTP_PORT, or configure that proxy manually."
+    fi
     if ! ss -ltnpH 'sport = :80' 2>/dev/null | grep -q 'nginx'; then
       die "Port 80 is not served by Nginx. Refusing to alter an unknown web server setup."
     fi
