@@ -2,7 +2,7 @@ import type { Server, Socket } from 'socket.io';
 import { prisma, resolveSession, type AuthUser } from '../middleware/auth';
 import { addConnection, onlineUserIds, removeConnection } from '../services/presence';
 import { bindRealtime, emitToUser } from '../services/notifier';
-import { registerCallSocketHandlers } from './calls';
+import { registerCallSocketHandlers, endCallsForDisconnect } from './calls';
 import { registerChatSocketHandlers, registerPermissionSocketHandlers } from './chat';
 import { registerGameSocketHandlers } from './games';
 
@@ -83,8 +83,14 @@ export function attachSocketHandlers(io: Server) {
     registerCallSocketHandlers(io, socket);
 
     socket.on('disconnect', () => {
-      removeConnection(user.id, socket.id);
+      const lastConnection = removeConnection(user.id, socket.id);
       broadcastPresence(io);
+      // Only tidy up calls when this was the participant's final live socket.
+      if (lastConnection) {
+        void endCallsForDisconnect(user.id, user.username).catch((error) =>
+          console.error('Call cleanup on disconnect failed', error)
+        );
+      }
     });
   });
 }

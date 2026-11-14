@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { ArrowLeft, LockKeyhole, ShieldCheck, Ticket } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
-import { Button, Panel } from '@/components/ui';
+import { Button } from '@/components/ui';
 
 export function PromoScreen() {
   const duo = useDuo();
@@ -81,17 +81,6 @@ export function PromoScreen() {
             </div>
           </div>
         </div>
-
-        <Panel className="mt-4 p-4">
-          <p className="text-sm font-medium">Promo code is not RESTORE</p>
-          <p className="muted mt-1 text-xs leading-5">
-            A promo code unlocks Chat. RESTORE returns you to an existing conversation that was
-            hidden or archived. Permanently deleted messages cannot be restored.
-          </p>
-          <Button className="mt-3" onClick={() => duo.navigate('RESTORE')}>
-            Open Restore Your Chat
-          </Button>
-        </Panel>
       </div>
     </>
   );

@@ -3,7 +3,7 @@
 import { AlertTriangle, CheckCircle2, X } from 'lucide-react';
 import { DuoContext, useDuo, useDuoApp } from '@/hooks/useDuoApp';
 import { LoginScreen } from '@/components/LoginScreen';
-import { AppHeader, AppMobileNav, AppSidebar } from '@/components/AppHeader';
+import { AppHeader } from '@/components/AppHeader';
 import { HomeScreen } from '@/components/HomeScreen';
 import { ChatScreen } from '@/components/ChatScreen';
 import { StudyScreen } from '@/components/StudyScreen';
@@ -14,8 +14,6 @@ import { PromoScreen } from '@/components/PromoScreen';
 import { RestoreScreen } from '@/components/RestoreScreen';
 import { SettingsScreen } from '@/components/SettingsScreen';
 import { AdminScreen } from '@/components/AdminScreen';
-import { ButterflyLayer } from '@/components/ButterflyLayer';
-import { IncomingCallBar } from '@/components/CallControls';
 import { Spinner } from '@/components/ui';
 
 export default function DuoApp() {
@@ -44,38 +42,26 @@ function DuoShell() {
 
   return (
     <div className="shell">
-      <div className="mx-auto min-h-screen max-w-7xl px-3 pb-24 pt-2 md:px-6 md:pb-8">
+      <div className="mx-auto min-h-screen w-full max-w-3xl px-3 pb-10 pt-2 md:px-6">
         <AppHeader />
-        <AppMobileNav />
 
-        <div className="grid gap-4 md:grid-cols-[220px_1fr]">
-          <AppSidebar />
-          <main className="min-w-0">
-            {duo.screen === 'HOME' && <HomeScreen />}
-            {duo.screen === 'CHAT' && <ChatScreen />}
-            {duo.screen === 'STUDY' && <StudyScreen />}
-            {duo.screen === 'GAMES' && <GamesScreen />}
-            {duo.screen === 'GAME' && <GameScreen />}
-            {duo.screen === 'INBOX' && <InboxScreen />}
-            {duo.screen === 'PROMO' && <PromoScreen />}
-            {duo.screen === 'RESTORE' && <RestoreScreen />}
-            {duo.screen === 'SETTINGS' && <SettingsScreen />}
-            {duo.screen === 'ADMIN' &&
-              (duo.user.role === 'HOST' ? <AdminScreen /> : <HomeScreen />)}
-          </main>
-        </div>
+        <main className="min-w-0">
+          {duo.screen === 'HOME' && <HomeScreen />}
+          {duo.screen === 'CHAT' && <ChatScreen />}
+          {duo.screen === 'STUDY' && <StudyScreen />}
+          {duo.screen === 'GAMES' && <GamesScreen />}
+          {duo.screen === 'GAME' && <GameScreen />}
+          {duo.screen === 'INBOX' && <InboxScreen />}
+          {duo.screen === 'PROMO' && <PromoScreen />}
+          {duo.screen === 'RESTORE' && <RestoreScreen />}
+          {duo.screen === 'SETTINGS' && <SettingsScreen />}
+          {duo.screen === 'ADMIN' &&
+            (duo.user.role === 'HOST' ? <AdminScreen /> : <HomeScreen />)}
+        </main>
       </div>
-
-      <ButterflyLayer
-        ids={duo.butterflies}
-        onOpen={() => duo.navigate('CHAT')}
-        onDismiss={duo.dismissButterfly}
-      />
 
       {/* Remote WebRTC audio only. No audio or message content is rendered. */}
       <audio ref={duo.remoteAudioRef} autoPlay playsInline className="hidden" />
-
-      <IncomingCallBar />
 
       <div className="toast-stack" aria-live="polite">
         {duo.error && (

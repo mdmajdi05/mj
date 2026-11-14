@@ -147,7 +147,7 @@ export function SettingsScreen() {
             </p>
             <p className="mt-1">
               <span className="muted">Chat access:</span>{' '}
-              {duo.user?.role === 'HOST' || duo.user?.chatUnlocked ? 'Unlocked' : 'Locked'}
+              {duo.chatSessionUnlocked ? 'Open (this session)' : 'Hidden'}
             </p>
             <p className="mt-1">
               <span className="muted">Session:</span> HttpOnly cookie, expires automatically

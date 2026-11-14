@@ -7,6 +7,47 @@ import { emitToUser, notifyUser } from '../services/notifier';
 
 type SignalPayload = { callId?: string; kind?: string; signal?: unknown };
 
+/**
+ * Privacy cleanup for a socket that drops (refresh, tab close, network loss,
+ * screen lock). The call is ended for both sides instead of silently staying
+ * alive with a disconnected participant.
+ */
+export async function endCallsForDisconnect(userId: string, username: string) {
+  const calls = await prisma.call.findMany({
+    where: {
+      status: { in: [CallStatus.RINGING, CallStatus.ACTIVE] },
+      participants: { some: { userId } }
+    },
+    include: { participants: true }
+  });
+
+  for (const call of calls) {
+    await prisma.callParticipant.updateMany({
+      where: { callId: call.id, userId },
+      data: { leftAt: new Date() }
+    });
+    await prisma.call.update({
+      where: { id: call.id },
+      data: { status: CallStatus.ENDED, endedAt: new Date() }
+    });
+    for (const participant of call.participants) {
+      if (participant.userId === userId) {
+        emitToUser(participant.userId, 'call:left', { callId: call.id });
+      } else {
+        emitToUser(participant.userId, 'call:participant-left', {
+          callId: call.id,
+          userId,
+          username
+        });
+        emitToUser(participant.userId, 'call:ended', {
+          callId: call.id,
+          reason: 'participant-left'
+        });
+      }
+    }
+  }
+}
+
 export function registerCallSocketHandlers(_io: Server, socket: Socket) {
   const user = socket.data.user as AuthUser;
 
@@ -226,9 +267,9 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
   });
 
   /**
-   * Used after a refresh, a dropped network or a mobile browser suspending the
-   * tab. The call itself is never ended by a disconnect, so the returning
-   * participant can silently rejoin the same call.
+   * Used after a transient in-call WebRTC reset. Disconnects, refreshes and
+   * page hides end the call (see endCallsForDisconnect), so no private chat
+   * session is restored silently.
    */
   socket.on('call:rejoin', async (payload: { callId?: string }) => {
     const call = payload?.callId

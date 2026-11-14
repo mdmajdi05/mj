@@ -31,9 +31,9 @@ export function RestoreScreen() {
     <>
       <button
         className="muted mb-4 flex items-center gap-1 text-xs hover:text-white"
-        onClick={() => duo.navigate('STUDY')}
+        onClick={() => duo.navigate('HOME')}
       >
-        <ArrowLeft size={14} /> Back to Study Assistant
+        <ArrowLeft size={14} /> Back to games
       </button>
 
       <div className="mx-auto max-w-lg">

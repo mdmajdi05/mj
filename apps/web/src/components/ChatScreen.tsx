@@ -10,7 +10,8 @@ import {
   MessageCircle,
   MoreVertical,
   Send,
-  Trash2
+  Trash2,
+  X
 } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
 import { formatTime } from '@/lib/utils';
@@ -92,6 +93,14 @@ export function ChatScreen() {
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            className="icon-btn"
+            aria-label="Close private chat"
+            title="Close private chat"
+            onClick={duo.closePrivateChat}
+          >
+            <X size={18} />
+          </button>
           {duo.user?.role === 'HOST' && (
             <div className="relative">
               <button
@@ -215,6 +224,25 @@ export function ChatScreen() {
           <div ref={bottomRef} />
         </div>
 
+        <div className="chat-study-cta">
+          <div className="min-w-0">
+            <p className="flex items-center gap-1.5 text-sm font-medium">
+              <BookOpen size={15} /> Study Mode
+            </p>
+            <p className="muted text-[11px] leading-5">
+              Chat hides instantly. The call stays connected.
+            </p>
+          </div>
+          <Button
+            variant="primary"
+            className="study-button"
+            onClick={() => duo.enterStudyMode()}
+          >
+            <BookOpen size={18} />
+            OPEN STUDY MODE
+          </Button>
+        </div>
+
         <div className="chat-composer">
           <textarea
             className="field min-h-[48px] resize-none"
@@ -234,23 +262,6 @@ export function ChatScreen() {
             <Send size={17} />
           </Button>
         </div>
-      </div>
-
-      <div className="chat-study-footer">
-        <div>
-          <p className="text-sm font-medium">Study Mode</p>
-          <p className="muted text-xs leading-5">
-            Chat hides instantly. Your conversation is saved and the call stays connected.
-          </p>
-        </div>
-        <Button
-          variant="primary"
-          className="study-button"
-          onClick={() => duo.enterStudyMode()}
-        >
-          <BookOpen size={18} />
-          OPEN STUDY MODE
-        </Button>
       </div>
 
       <Modal

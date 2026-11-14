@@ -10,7 +10,7 @@ import { Badge, Button, Panel } from '@/components/ui';
 
 export function GameScreen() {
   const duo = useDuo();
-  const [sendToGame, setSendToGame] = useState(false);
+  const [sendToGame, setSendToGame] = useState(true);
   const [draft, setDraft] = useState('');
   const [lastScore, setLastScore] = useState(0);
 
@@ -121,10 +121,11 @@ export function GameScreen() {
           </Button>
         </div>
 
-        {!sendToGame && duo.user?.role === 'GUEST' && !duo.user.chatUnlocked && (
+        {!sendToGame && !duo.chatSessionUnlocked && (
           <p className="mt-2 flex items-center gap-2 text-xs text-amber-200">
             <LockKeyhole size={13} />
-            Normal Chat is locked. Unlock with the promo code or switch SEND-TO-GAME ON.
+            Private Chat is hidden. Enter the secret code from your profile, or switch SEND-TO-GAME
+            ON.
           </p>
         )}
       </Panel>

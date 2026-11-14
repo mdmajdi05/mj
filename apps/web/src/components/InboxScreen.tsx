@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { CheckCheck, Gamepad2, Inbox, LockKeyhole, MessageCircle, Send } from 'lucide-react';
+import { CheckCheck, Gamepad2, Inbox, LockKeyhole, Send } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useDuo } from '@/hooks/useDuoApp';
 import { formatDateTime } from '@/lib/utils';
@@ -22,8 +22,8 @@ export function InboxScreen() {
 
   function continueToChat() {
     setSelected(null);
-    if (duo.user?.role === 'GUEST' && !duo.user.chatUnlocked) duo.navigate('PROMO');
-    else duo.navigate('CHAT');
+    // The Game Inbox never opens private Chat directly.
+    duo.navigate('PROMO');
   }
 
   return (
@@ -91,22 +91,15 @@ export function InboxScreen() {
 
       <div className="panel mt-4 flex flex-wrap items-center justify-between gap-3 p-5">
         <div>
-          <p className="font-medium">Want to continue in private Chat?</p>
+          <p className="font-medium">Private Chat is hidden</p>
           <p className="muted mt-1 text-sm">
-            {duo.user?.role === 'GUEST' && !duo.user.chatUnlocked
-              ? 'Opening Chat from the Game Inbox uses a coupon-style access code. It does not replace account login.'
-              : 'Your private conversation is already unlocked. Game messages stay in this Inbox.'}
+            Chat opens only from your profile with the secret access code. Game messages stay in
+            this Inbox.
           </p>
         </div>
-        {duo.user?.role === 'GUEST' && !duo.user.chatUnlocked ? (
-          <Button variant="primary" onClick={() => duo.navigate('PROMO')}>
-            <LockKeyhole size={15} /> Unlock private Chat
-          </Button>
-        ) : (
-          <Button variant="primary" onClick={() => duo.navigate('CHAT')}>
-            <MessageCircle size={15} /> Open private Chat
-          </Button>
-        )}
+        <Button variant="primary" onClick={() => duo.navigate('PROMO')}>
+          <LockKeyhole size={15} /> Enter Secret Code
+        </Button>
       </div>
 
       <Modal
@@ -131,7 +124,7 @@ export function InboxScreen() {
                 <Send size={15} /> Back to games
               </Button>
               <Button variant="primary" onClick={continueToChat}>
-                <MessageCircle size={15} /> Continue to private Chat
+                <LockKeyhole size={15} /> Enter secret code
               </Button>
             </div>
           </>

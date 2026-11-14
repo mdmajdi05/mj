@@ -13,7 +13,6 @@ import { io, type Socket } from 'socket.io-client';
 import { API, api, ApiError } from '@/lib/api';
 import type {
   AdminActivity,
-  CallRecord,
   CallState,
   ConversationStatus,
   GameMessage,
@@ -77,8 +76,8 @@ export function useDuoApp() {
   const [callHidden, setCallHidden] = useState(false);
   const [callSeconds, setCallSeconds] = useState(0);
   const [callStartedAt, setCallStartedAt] = useState<number | null>(null);
-  const [restoredCall, setRestoredCall] = useState<CallRecord | null>(null);
   const [guestMicConsent, setGuestMicConsentState] = useState(false);
+  const [chatSessionUnlocked, setChatSessionUnlocked] = useState(false);
 
   const socketRef = useRef<Socket | null>(null);
   const userRef = useRef<User | null>(null);
@@ -94,11 +93,16 @@ export function useDuoApp() {
   const callTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const callHiddenRef = useRef(false);
   const lastOfferAtRef = useRef(0);
-  const resumedCallRef = useRef('');
-  const justLoggedInRef = useRef(false);
   const autoAnsweredRef = useRef('');
   const privacyOutputRef = useRef<() => Promise<void>>(async () => {});
   const privacyNoticeRef = useRef(false);
+  /**
+   * Chat access is intentionally memory-only. It is set exclusively by a
+   * successful promo-code check and is wiped on refresh, tab hide, screen
+   * lock, network loss or leaving Chat. No persisted flag can reopen Chat.
+   */
+  const chatUnlockedRef = useRef(false);
+  const mediaRequestPendingRef = useRef(false);
 
   userRef.current = user;
   screenRef.current = screen;
@@ -109,6 +113,19 @@ export function useDuoApp() {
   const setScreen = useCallback((next: Screen) => {
     screenRef.current = next;
     setScreenState(next);
+  }, []);
+
+  const unlockChatSession = useCallback(() => {
+    chatUnlockedRef.current = true;
+    setChatSessionUnlocked(true);
+  }, []);
+
+  const lockChatSession = useCallback(() => {
+    chatUnlockedRef.current = false;
+    setChatSessionUnlocked(false);
+    // Drop decrypted chat content from memory as soon as the session closes.
+    setMessages([]);
+    setUnread(0);
   }, []);
 
   const showError = useCallback((message: string) => {
@@ -244,7 +261,8 @@ export function useDuoApp() {
   const loadMessages = useCallback(async () => {
     const current = userRef.current;
     if (!current) return;
-    if (current.role === 'GUEST' && !current.chatUnlocked) {
+    // Refresh proof: only an in-memory promo unlock may load private messages.
+    if (!chatUnlockedRef.current) {
       setMessages([]);
       return;
     }
@@ -304,7 +322,9 @@ export function useDuoApp() {
     (next: Screen) => {
       const current = userRef.current;
       if (!current) return;
-      if (next === 'CHAT' && current.role !== 'HOST' && !current.chatUnlocked) {
+      // The ONLY way into private Chat is a fresh promo-code check in this
+      // browser session. Every other link is redirected to the code screen.
+      if (next === 'CHAT' && !chatUnlockedRef.current) {
         setScreen('PROMO');
         setMenuOpen(false);
         void api('/chat/screen', {
@@ -352,7 +372,6 @@ export function useDuoApp() {
       method: 'POST',
       body: JSON.stringify({ username, password })
     });
-    justLoggedInRef.current = true;
     setUser(account);
     userRef.current = account;
     setScreen('HOME');
@@ -370,6 +389,7 @@ export function useDuoApp() {
     socketRef.current = null;
     setUser(null);
     userRef.current = null;
+    lockChatSession();
     setScreen('HOME');
     setMessages([]);
     setGameMessages([]);
@@ -379,7 +399,7 @@ export function useDuoApp() {
     setCallState('IDLE');
     setCallId('');
     callIdRef.current = '';
-  }, [setScreen]);
+  }, [lockChatSession, setScreen]);
 
   const updatePreference = useCallback(
     async (patch: Partial<Preferences>) => {
@@ -485,38 +505,29 @@ export function useDuoApp() {
   useEffect(() => {
     if (!user) return;
     let alive = true;
+    // A reload always lands on the games home. Private Chat and any active
+    // call are never restored from the server after a refresh.
+    chatUnlockedRef.current = false;
+    setChatSessionUnlocked(false);
+    setMessages([]);
+    setUnread(0);
+    setScreen('HOME');
+    void api('/chat/screen', {
+      method: 'POST',
+      body: JSON.stringify({ screen: 'HOME' })
+    }).catch(() => undefined);
+
     (async () => {
       try {
-        const [preference, summary] = await Promise.all([
-          api<{ screen: Screen; chatVisible: boolean }>('/chat/screen'),
-          api<Summary>('/chat/summary')
-        ]);
+        const summary = await api<Summary>('/chat/summary');
         if (!alive) return;
-
-        let next = preference.screen || 'HOME';
-        if (next === 'CHAT' && user.role === 'GUEST' && !user.chatUnlocked) next = 'PROMO';
-        if (next === 'ADMIN' && user.role !== 'HOST') next = 'HOME';
-        if (next === 'GAME') next = 'GAMES';
-        if (preference.chatVisible === false && next === 'CHAT') next = 'STUDY';
-        if (justLoggedInRef.current) {
-          justLoggedInRef.current = false;
-          next = 'HOME';
-          void api('/chat/screen', {
-            method: 'POST',
-            body: JSON.stringify({ screen: 'HOME' })
-          }).catch(() => undefined);
-        }
-        setScreen(next);
         setConversationStatus(summary.status);
-        setUnread(summary.unreadMessages);
+        setUnread(0);
         setInboxUnread(summary.unreadGameMessages);
         setActivityUnread(summary.unreadNotifications);
         setOtherOnline(summary.onlineUserIds.some((id) => id !== user.id));
-        if (summary.activeCall) {
-          setRestoredCall(summary.activeCall);
-        }
       } catch {
-        // A missing preference is not fatal; the app still starts on HOME.
+        // A missing summary is not fatal; the app still starts on HOME.
         if (alive) setScreen('HOME');
       }
 
@@ -529,7 +540,7 @@ export function useDuoApp() {
     return () => {
       alive = false;
     };
-  }, [user?.id, setScreen, showNotice]);
+  }, [user?.id, setScreen]);
 
   useEffect(() => {
     if (!user) return;
@@ -616,8 +627,6 @@ export function useDuoApp() {
     setRemoteMicOn(null);
     setCallSeconds(0);
     setCallStartedAt(null);
-    setRestoredCall(null);
-    resumedCallRef.current = '';
     autoAnsweredRef.current = '';
     lastOfferAtRef.current = 0;
     setCallHidden(false);
@@ -669,9 +678,15 @@ export function useDuoApp() {
 
   const ensurePeer = useCallback(async () => {
     if (pcRef.current && localStreamRef.current) return pcRef.current;
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true }
-    });
+    mediaRequestPendingRef.current = true;
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true }
+      });
+    } finally {
+      mediaRequestPendingRef.current = false;
+    }
     localStreamRef.current = stream;
     setMicOn(stream.getAudioTracks().every((track) => track.enabled));
     const peer = new RTCPeerConnection({ iceServers });
@@ -756,63 +771,6 @@ export function useDuoApp() {
     }
   }, [ensurePeer, handleSignal, incomingCall, showError]);
 
-  const restoreCallSession = useCallback(
-    async (call: CallRecord) => {
-      const startedAt = new Date(call.startedAt).getTime();
-      callIdRef.current = call.id;
-      setCallId(call.id);
-      setCallStartedAt(Number.isFinite(startedAt) ? startedAt : Date.now());
-
-      if (call.status === 'RINGING') {
-        if (userRef.current?.role === 'GUEST') {
-          const other = call.participants.find(
-            (participant) => participant.userId !== userRef.current?.id
-          );
-          setIncomingCall({
-            callId: call.id,
-            from: other?.user?.username || 'Host',
-            createdAt: call.startedAt
-          });
-          setCallState('RINGING');
-        } else {
-          setCallState('CONNECTING');
-          setRestoredCall(call);
-          try {
-            await ensurePeer();
-          } catch {
-            // Host will retry when the guest accepts.
-          }
-        }
-        return;
-      }
-
-      if (call.status !== 'ACTIVE') {
-        closeLocalCall();
-        return;
-      }
-
-      setCallState('RECONNECTING');
-      setRestoredCall(call);
-      try {
-        await ensurePeer();
-        if (userRef.current?.role === 'HOST' && screenRef.current === 'STUDY') {
-          localStreamRef.current?.getAudioTracks().forEach((track) => {
-            track.enabled = false;
-          });
-          setMicOn(false);
-          socketRef.current?.emit('call:mic-status', { callId: call.id, enabled: false });
-        }
-        socketRef.current?.emit('call:rejoin', { callId: call.id });
-        if (userRef.current?.role === 'HOST') await sendOffer(true);
-      } catch {
-        showNotice(
-          'The call is still connected. Tap the day/night toggle so the browser can restore your microphone.'
-        );
-      }
-    },
-    [closeLocalCall, ensurePeer, sendOffer, showNotice]
-  );
-
   const resumeCall = useCallback(async () => {
     const id = callIdRef.current;
     if (!id) {
@@ -852,6 +810,24 @@ export function useDuoApp() {
     }
     closeLocalCall();
   }, [closeLocalCall]);
+
+  /** Explicit Chat close: end the call, forget the chat session, go home. */
+  const closePrivateChat = useCallback(() => {
+    const activeId = callIdRef.current;
+    if (activeId) {
+      socketRef.current?.emit(
+        userRef.current?.role === 'HOST' ? 'call:end' : 'call:leave',
+        { callId: activeId }
+      );
+    }
+    closeLocalCall();
+    lockChatSession();
+    setScreen('HOME');
+    void api('/chat/screen', {
+      method: 'POST',
+      body: JSON.stringify({ screen: 'HOME' })
+    }).catch(() => undefined);
+  }, [closeLocalCall, lockChatSession, setScreen]);
 
   const setLocalMic = useCallback((enabled: boolean) => {
     localStreamRef.current?.getAudioTracks().forEach((track) => {
@@ -909,8 +885,10 @@ export function useDuoApp() {
     if (inCall && userRef.current?.role === 'HOST' && micOn) {
       setLocalMic(false);
     }
+    // Chat stays hidden. Returning to it needs the promo code again.
+    lockChatSession();
     navigate('STUDY');
-  }, [micOn, navigate, setLocalMic]);
+  }, [lockChatSession, micOn, navigate, setLocalMic]);
 
   const playRemoteAudio = useCallback(() => {
     if (!remoteAudioRef.current) return;
@@ -926,13 +904,6 @@ export function useDuoApp() {
     },
     []
   );
-
-  useEffect(() => {
-    if (!restoredCall || !user) return;
-    if (resumedCallRef.current === restoredCall.id) return;
-    resumedCallRef.current = restoredCall.id;
-    void restoreCallSession(restoredCall);
-  }, [restoredCall, restoreCallSession, user]);
 
   useEffect(() => {
     if (!callStartedAt) {
@@ -984,16 +955,19 @@ export function useDuoApp() {
     socketRef.current = socket;
 
     socket.on('connect', () => {
-      if (callIdRef.current) {
-        socket.emit('call:rejoin', { callId: callIdRef.current });
-        if (userRef.current?.role === 'HOST') void sendOffer(true);
-      }
+      // Intentionally empty: no call or chat session is resumed automatically.
     });
 
     socket.on('disconnect', () => {
-      if (callStateRef.current === 'ACTIVE' || callStateRef.current === 'CONNECTING') {
-        setCallState('RECONNECTING');
-      }
+      // Privacy rule: losing the live connection closes Chat and ends any call
+      // locally instead of leaving a hidden session running in the background.
+      closeLocalCall();
+      lockChatSession();
+      setScreen('HOME');
+      void api('/chat/screen', {
+        method: 'POST',
+        body: JSON.stringify({ screen: 'HOME' })
+      }).catch(() => undefined);
     });
 
     socket.on('connect_error', () =>
@@ -1003,6 +977,9 @@ export function useDuoApp() {
     socket.on('game:error', (payload: any) => showError(payload?.error || 'Game event failed'));
 
     socket.on('message:new', (message: Message) => {
+      // Never keep private message content in memory unless Chat was opened
+      // with a valid promo code in this session.
+      if (!chatUnlockedRef.current) return;
       setMessages((current) =>
         current.some((item) => item.id === message.id) ? current : [...current, message]
       );
@@ -1216,12 +1193,63 @@ export function useDuoApp() {
     loadMessages,
     loadNotifications,
     loadPermissions,
+    lockChatSession,
     playNotificationSound,
     sendOffer,
+    setScreen,
     showBrowserNotification,
     showError,
     showNotice
   ]);
+
+  /**
+   * Privacy guard: refreshing, closing/hiding the tab, locking the screen or
+   * switching apps ends the call, forgets the chat session and returns to the
+   * games home. Nothing about the private chat survives in memory.
+   */
+  useEffect(() => {
+    if (!user) return;
+
+    const closeForPrivacy = (force = false) => {
+      const privateSurface =
+        screenRef.current === 'CHAT' ||
+        screenRef.current === 'STUDY' ||
+        Boolean(callIdRef.current) ||
+        chatUnlockedRef.current;
+      if (!force && !privateSurface) return;
+
+      const activeId = callIdRef.current;
+      if (activeId) {
+        socketRef.current?.emit(
+          userRef.current?.role === 'HOST' ? 'call:end' : 'call:leave',
+          { callId: activeId }
+        );
+      }
+      closeLocalCall();
+      lockChatSession();
+      setScreen('HOME');
+      void api('/chat/screen', {
+        method: 'POST',
+        body: JSON.stringify({ screen: 'HOME' })
+      }).catch(() => undefined);
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState !== 'hidden') return;
+      // A microphone permission sheet can briefly hide the page. Do not treat
+      // that as the user locking their screen.
+      if (mediaRequestPendingRef.current) return;
+      closeForPrivacy();
+    };
+    const onPageHide = () => closeForPrivacy(true);
+
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', onPageHide);
+    };
+  }, [user?.id, closeLocalCall, lockChatSession, setScreen]);
 
   useEffect(() => {
     if (!user) return;
@@ -1239,9 +1267,8 @@ export function useDuoApp() {
     (content: string, destination: MessageDestination = 'CHAT') => {
       const value = content.trim();
       if (!value) return false;
-      const current = userRef.current;
-      if (destination === 'CHAT' && current?.role === 'GUEST' && !current.chatUnlocked) {
-        showError('Unlock private Chat before sending to normal Chat.');
+      if (destination === 'CHAT' && !chatUnlockedRef.current) {
+        showError('Enter the secret code before sending to private Chat.');
         navigate('PROMO');
         return false;
       }
@@ -1266,16 +1293,22 @@ export function useDuoApp() {
         userRef.current = { ...userRef.current, chatUnlocked: true };
         setUser(userRef.current);
       }
+      // Memory-only grant. A refresh wipes this, so the code is required again.
+      unlockChatSession();
       await loadMessages();
       setConversationStatus('ACTIVE');
       navigate('CHAT');
       showNotice('Chat unlocked.');
     },
-    [loadMessages, navigate, showNotice]
+    [loadMessages, navigate, showNotice, unlockChatSession]
   );
 
   const restoreChat = useCallback(
     async (command: string) => {
+      if (!chatUnlockedRef.current) {
+        navigate('PROMO');
+        return;
+      }
       await api('/chat/restore', {
         method: 'POST',
         body: JSON.stringify({ command })
@@ -1431,6 +1464,7 @@ export function useDuoApp() {
     callSeconds,
     callStartedAt,
     guestMicConsent,
+    chatSessionUnlocked,
     remoteAudioRef,
     setScreen,
     navigate,
@@ -1443,6 +1477,7 @@ export function useDuoApp() {
     acceptCall,
     declineIncoming,
     hangup,
+    closePrivateChat,
     toggleMic,
     hideCall,
     returnToCall,
