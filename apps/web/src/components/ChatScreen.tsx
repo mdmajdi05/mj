@@ -4,9 +4,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive,
   BookOpen,
+  Check,
   CheckCheck,
   Eye,
-  LockKeyhole,
   MessageCircle,
   MoreVertical,
   Send,
@@ -14,8 +14,8 @@ import {
 } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
 import { formatTime } from '@/lib/utils';
-import { Badge, Button, EmptyState, Modal } from '@/components/ui';
-import { CallOrb, CallStatusBar } from '@/components/CallControls';
+import type { Message } from '@/lib/types';
+import { Button, EmptyState, Modal } from '@/components/ui';
 
 type ConfirmAction =
   | { type: 'archive' }
@@ -27,7 +27,6 @@ export function ChatScreen() {
   const duo = useDuo();
   const [draft, setDraft] = useState('');
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
-  const [studyOpen, setStudyOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -73,7 +72,6 @@ export function ChatScreen() {
 
   const deleted = duo.conversationStatus === 'DELETED';
   const archived = duo.conversationStatus === 'ARCHIVED';
-  const locked = duo.user?.role === 'GUEST' && !duo.user.chatUnlocked;
 
   return (
     <div className="chat-shell">
@@ -94,17 +92,6 @@ export function ChatScreen() {
         </div>
 
         <div className="flex items-center gap-2">
-          {duo.conversationStatus !== 'ACTIVE' && duo.conversationStatus !== 'NONE' && (
-            <Badge tone={archived ? 'warn' : deleted ? 'bad' : 'neutral'}>
-              {duo.conversationStatus.toLowerCase()}
-            </Badge>
-          )}
-          {locked && (
-            <Badge tone="warn">
-              <LockKeyhole size={11} className="mr-1 inline" /> Locked
-            </Badge>
-          )}
-          <CallOrb />
           {duo.user?.role === 'HOST' && (
             <div className="relative">
               <button
@@ -153,8 +140,6 @@ export function ChatScreen() {
         </div>
       </div>
 
-      <CallStatusBar />
-
       {archived && (
         <div className="chat-banner">
           <span>This conversation is archived. Messages are preserved.</span>
@@ -174,31 +159,35 @@ export function ChatScreen() {
         <div className="chat-scroll" ref={scrollRef}>
           {chatMessages.map((message) => {
             const mine = message.senderId === duo.user?.id;
-            return (
-              <div key={message.id} className={`message-row ${mine ? 'mine' : ''}`}>
-                <div className={`bubble ${mine ? 'bubble-sent' : 'bubble-received'}`}>
+            return mine ? (
+              <div key={message.id} className="message-row mine">
+                <div className="bubble bubble-sent">
                   <p className="whitespace-pre-wrap break-words text-sm leading-6">
                     {message.content}
                   </p>
                   <div className="mt-1 flex items-center justify-end gap-2 text-[10px] text-white/55">
                     <span>{formatTime(message.createdAt)}</span>
-                    {mine && (
-                      <span className="inline-flex items-center gap-1">
-                        {message.readAt ? (
-                          <>
-                            <Eye size={11} /> Seen
-                          </>
-                        ) : message.deliveredAt ? (
-                          <>
-                            <CheckCheck size={11} /> Delivered
-                          </>
-                        ) : (
-                          'Sent'
-                        )}
-                      </span>
-                    )}
+                    <MessageStatus message={message} otherName={otherName} />
                   </div>
-                  {(mine || duo.user?.role === 'HOST') && (
+                  <button
+                    className="message-delete"
+                    aria-label="Delete message"
+                    title="Delete this message"
+                    onClick={() => setConfirmAction({ type: 'message', id: message.id })}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div key={message.id} className="study-ai-row chat-ai-row">
+                <span className="assistant-avatar small">{otherInitial}</span>
+                <div className="study-ai-bubble relative">
+                  <p className="whitespace-pre-wrap break-words text-sm leading-7">
+                    {message.content}
+                  </p>
+                  <p className="mt-1 text-[10px] text-white/45">{formatTime(message.createdAt)}</p>
+                  {duo.user?.role === 'HOST' && (
                     <button
                       className="message-delete"
                       aria-label="Delete message"
@@ -215,11 +204,11 @@ export function ChatScreen() {
           {!chatMessages.length && (
             <EmptyState
               icon={<MessageCircle size={26} />}
-              title={deleted ? 'Conversation deleted' : 'Say something'}
+              title={deleted ? 'Conversation deleted' : 'Start the conversation'}
               description={
                 deleted
                   ? 'New messages will begin a fresh conversation.'
-                  : 'Send the first message. It stays between the two of you.'
+                  : 'Only the two of you can see this conversation.'
               }
             />
           )}
@@ -239,7 +228,7 @@ export function ChatScreen() {
                 send();
               }
             }}
-            placeholder={locked ? 'Unlock Chat to send a message…' : 'Message…'}
+            placeholder="Message…"
           />
           <Button variant="primary" onClick={send} aria-label="Send message">
             <Send size={17} />
@@ -249,49 +238,20 @@ export function ChatScreen() {
 
       <div className="chat-study-footer">
         <div>
-          <p className="text-sm font-medium">Need to study?</p>
+          <p className="text-sm font-medium">Study Mode</p>
           <p className="muted text-xs leading-5">
-            Study Mode hides this chat. The private call can keep running.
+            Chat hides instantly. Your conversation is saved and the call stays connected.
           </p>
         </div>
         <Button
           variant="primary"
           className="study-button"
-          onClick={() => setStudyOpen(true)}
+          onClick={() => duo.enterStudyMode()}
         >
           <BookOpen size={18} />
           OPEN STUDY MODE
         </Button>
       </div>
-
-      <Modal
-        open={studyOpen}
-        title="Open Study Mode?"
-        onClose={() => setStudyOpen(false)}
-      >
-        <p className="muted text-sm leading-6">
-          This chat disappears from the screen and the Study Assistant opens. Your messages are
-          kept and the private call stays connected.
-        </p>
-        {duo.user?.role === 'HOST' && (
-          <p className="mt-3 rounded-xl border border-amber-400/20 bg-amber-950/20 p-3 text-xs leading-5 text-amber-100">
-            Your microphone will be muted so the other player cannot hear you. You will still hear
-            them, and you can unmute from Study Mode.
-          </p>
-        )}
-        <div className="mt-5 flex justify-end gap-2">
-          <Button onClick={() => setStudyOpen(false)}>Cancel</Button>
-          <Button
-            variant="primary"
-            onClick={() => {
-              setStudyOpen(false);
-              duo.enterStudyMode();
-            }}
-          >
-            <BookOpen size={16} /> Open Study Mode
-          </Button>
-        </div>
-      </Modal>
 
       <Modal
         open={confirmAction !== null}
@@ -323,5 +283,33 @@ export function ChatScreen() {
         </div>
       </Modal>
     </div>
+  );
+}
+
+function MessageStatus({ message, otherName }: { message: Message; otherName: string }) {
+  if (message.readAt) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-emerald-200/85"
+        title={`Seen by ${otherName} — visible only to you`}
+      >
+        <Eye size={11} /> Seen
+      </span>
+    );
+  }
+  if (message.deliveredAt) {
+    return (
+      <span
+        className="inline-flex items-center gap-1"
+        title={`Delivered to ${otherName} — visible only to you`}
+      >
+        <CheckCheck size={11} /> Delivered
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1" title="Sent — visible only to you">
+      <Check size={11} /> Sent
+    </span>
   );
 }

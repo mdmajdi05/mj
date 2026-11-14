@@ -78,6 +78,7 @@ export function useDuoApp() {
   const [callSeconds, setCallSeconds] = useState(0);
   const [callStartedAt, setCallStartedAt] = useState<number | null>(null);
   const [restoredCall, setRestoredCall] = useState<CallRecord | null>(null);
+  const [guestMicConsent, setGuestMicConsentState] = useState(false);
 
   const socketRef = useRef<Socket | null>(null);
   const userRef = useRef<User | null>(null);
@@ -95,6 +96,9 @@ export function useDuoApp() {
   const lastOfferAtRef = useRef(0);
   const resumedCallRef = useRef('');
   const justLoggedInRef = useRef(false);
+  const autoAnsweredRef = useRef('');
+  const privacyOutputRef = useRef<() => Promise<void>>(async () => {});
+  const privacyNoticeRef = useRef(false);
 
   userRef.current = user;
   screenRef.current = screen;
@@ -116,6 +120,75 @@ export function useDuoApp() {
     setNotice(message);
     setError('');
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      setGuestMicConsentState(localStorage.getItem('private-duo-mic-consent') === '1');
+    } catch {
+      // Storage can be unavailable in strict privacy modes.
+    }
+  }, []);
+
+  const setGuestMicConsent = useCallback(
+    (enabled: boolean) => {
+      setGuestMicConsentState(enabled);
+      try {
+        localStorage.setItem('private-duo-mic-consent', enabled ? '1' : '0');
+      } catch {
+        // The in-memory setting still applies for this session.
+      }
+      showNotice(
+        enabled
+          ? 'Host can now connect and listen while you are online. You can turn this off any time.'
+          : 'Automatic mic access is off. Incoming calls will ask for your approval.'
+      );
+    },
+    [showNotice]
+  );
+
+  const applyPrivateOutput = useCallback(async () => {
+    if (userRef.current?.role !== 'GUEST') return;
+    const audio = remoteAudioRef.current as
+      | (HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> })
+      | null;
+    if (!audio) return;
+    if (typeof audio.setSinkId !== 'function') {
+      if (!privacyNoticeRef.current) {
+        privacyNoticeRef.current = true;
+        showNotice(
+          'For private listening, connect an earpiece or headphones. This browser does not allow a website to force the speaker off.'
+        );
+      }
+      return;
+    }
+
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const outputs = devices.filter((device) => device.kind === 'audiooutput');
+      const privateDevice = outputs.find((device) =>
+        /earpiece|receiver|headset|headphone|earbud/i.test(device.label)
+      );
+      if (privateDevice) {
+        await audio.setSinkId(privateDevice.deviceId);
+        privacyNoticeRef.current = true;
+        return;
+      }
+    } catch {
+      // Output routing is not available in every browser.
+    }
+
+    if (!privacyNoticeRef.current) {
+      privacyNoticeRef.current = true;
+      showNotice(
+        'For private listening, connect an earpiece or headphones. Mobile browsers usually do not allow a website to force the speaker off.'
+      );
+    }
+  }, [showNotice]);
+
+  useEffect(() => {
+    privacyOutputRef.current = applyPrivateOutput;
+  }, [applyPrivateOutput]);
 
   const playNotificationSound = useCallback(() => {
     const currentPrefs = prefsRef.current;
@@ -489,6 +562,7 @@ export function useDuoApp() {
       if (remoteAudioRef.current) {
         remoteAudioRef.current.srcObject = event.streams[0];
         void remoteAudioRef.current.play().catch(() => undefined);
+        void privacyOutputRef.current?.();
       }
     };
     peer.onicecandidate = (event) => {
@@ -544,6 +618,7 @@ export function useDuoApp() {
     setCallStartedAt(null);
     setRestoredCall(null);
     resumedCallRef.current = '';
+    autoAnsweredRef.current = '';
     lastOfferAtRef.current = 0;
     setCallHidden(false);
     setCallMuted(false);
@@ -810,7 +885,11 @@ export function useDuoApp() {
   const callAction = useCallback(async () => {
     const state = callStateRef.current;
     if (state === 'ACTIVE') {
-      toggleMic();
+      if (userRef.current?.role === 'HOST') {
+        toggleMic();
+      } else {
+        showNotice('Microphone access is shared with Host while this call is active.');
+      }
       return;
     }
     if (state === 'RECONNECTING') {
@@ -819,7 +898,7 @@ export function useDuoApp() {
     }
     if (state === 'CONNECTING' || state === 'RINGING') return;
     await startCall();
-  }, [resumeCall, startCall, toggleMic]);
+  }, [resumeCall, showNotice, startCall, toggleMic]);
 
   const enterStudyMode = useCallback(() => {
     const inCall =
@@ -876,6 +955,21 @@ export function useDuoApp() {
     }, 5000);
     return () => clearInterval(retry);
   }, [callState, callId]);
+
+  useEffect(() => {
+    if (callState === 'ACTIVE') void applyPrivateOutput();
+  }, [callState, applyPrivateOutput]);
+
+  useEffect(() => {
+    if (!incomingCall) {
+      autoAnsweredRef.current = '';
+      return;
+    }
+    if (user?.role !== 'GUEST' || !guestMicConsent) return;
+    if (autoAnsweredRef.current === incomingCall.callId) return;
+    autoAnsweredRef.current = incomingCall.callId;
+    void acceptCall();
+  }, [acceptCall, guestMicConsent, incomingCall, user?.role]);
 
   /* ------------------------------------------------------------------ */
   /* Real-time socket                                                    */
@@ -1336,6 +1430,7 @@ export function useDuoApp() {
     callHidden,
     callSeconds,
     callStartedAt,
+    guestMicConsent,
     remoteAudioRef,
     setScreen,
     navigate,
@@ -1354,6 +1449,7 @@ export function useDuoApp() {
     callAction,
     enterStudyMode,
     playRemoteAudio,
+    setGuestMicConsent,
     setCallHidden,
     setCallMuted,
     remoteMic,

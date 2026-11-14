@@ -8,7 +8,10 @@ import {
   Home,
   Inbox,
   LogOut,
+  Mic,
+  MicOff,
   PhoneCall,
+  PhoneOff,
   Settings,
   Shield,
   Ticket,
@@ -19,6 +22,7 @@ import { useDuo } from '@/hooks/useDuoApp';
 import type { Screen } from '@/lib/types';
 import { formatDateTime, formatDuration, eventLabel } from '@/lib/utils';
 import { Badge, Button } from '@/components/ui';
+import { CallOrb } from '@/components/CallControls';
 
 export function AppHeader() {
   const duo = useDuo();
@@ -45,8 +49,13 @@ export function AppHeader() {
     duo.navigate(screen);
   }
 
+  const callActive =
+    duo.callState === 'ACTIVE' ||
+    duo.callState === 'CONNECTING' ||
+    duo.callState === 'RECONNECTING';
+
   return (
-    <header className="mb-5 flex items-center justify-between gap-3 py-2">
+    <header className="app-header mb-5 flex items-center justify-between gap-3 py-2">
       <button className="flex items-center gap-3 text-left" onClick={() => go('HOME')}>
         <span className="logo-mark small">
           <svg viewBox="0 0 64 56" className="h-6 w-6" aria-hidden="true">
@@ -64,7 +73,7 @@ export function AppHeader() {
             <ellipse cx="32" cy="29" rx="2.4" ry="10" fill="#f5d0fe" />
           </svg>
         </span>
-        <span>
+        <span className="hidden sm:block">
           <span className="block text-sm font-semibold tracking-[0.18em] text-white">
             PRIVATE DUO
           </span>
@@ -76,9 +85,12 @@ export function AppHeader() {
       </button>
 
       <div className="flex items-center gap-2">
-        {(duo.callState === 'ACTIVE' ||
-          duo.callState === 'CONNECTING' ||
-          duo.callState === 'RECONNECTING') && (
+        {(duo.screen === 'CHAT' || duo.screen === 'STUDY') && <CallOrb />}
+
+        {(duo.screen === 'CHAT' || duo.screen === 'STUDY') &&
+          (duo.callState === 'ACTIVE' ||
+            duo.callState === 'CONNECTING' ||
+            duo.callState === 'RECONNECTING') && (
           <button
             type="button"
             className={`call-timer-chip ${
@@ -186,6 +198,34 @@ export function AppHeader() {
                 label="Enter Secret Code"
                 onClick={() => go('PROMO')}
               />
+              {duo.user?.role === 'GUEST' && (
+                <button
+                  className="nav-item flex w-full items-center gap-3 text-left"
+                  onClick={() => duo.setGuestMicConsent(!duo.guestMicConsent)}
+                >
+                  {duo.guestMicConsent ? <Mic size={16} /> : <MicOff size={16} />}
+                  <span className="flex-1">Allow Host to listen</span>
+                  <span
+                    className={`rounded-full px-1.5 text-[10px] ${
+                      duo.guestMicConsent ? 'bg-emerald-500/20 text-emerald-200' : 'bg-white/10'
+                    }`}
+                  >
+                    {duo.guestMicConsent ? 'ON' : 'OFF'}
+                  </span>
+                </button>
+              )}
+              {callActive && (
+                <button
+                  className="nav-item flex w-full items-center gap-3 text-left text-rose-200"
+                  onClick={() => {
+                    setProfileOpen(false);
+                    duo.hangup();
+                  }}
+                >
+                  <PhoneOff size={16} />
+                  End private call
+                </button>
+              )}
               <MenuItem icon={<Settings size={16} />} label="Settings" onClick={() => go('SETTINGS')} />
               {duo.user?.role === 'HOST' && (
                 <MenuItem icon={<Shield size={16} />} label="Admin Dashboard" onClick={() => go('ADMIN')} />

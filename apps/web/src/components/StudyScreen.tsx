@@ -1,11 +1,11 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { BookOpen, Send, Sparkles } from 'lucide-react';
+import { BookOpen, PhoneOff, Send, Sparkles } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
 import { studyGreeting, studyReply, studySuggestions } from '@/lib/study';
+import { formatDuration } from '@/lib/utils';
 import { Badge, Button } from '@/components/ui';
-import { CallStatusBar } from '@/components/CallControls';
 
 type StudyMessage = {
   id: string;
@@ -28,6 +28,10 @@ export function StudyScreen() {
   const [typing, setTyping] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const callActive =
+    duo.callState === 'ACTIVE' ||
+    duo.callState === 'CONNECTING' ||
+    duo.callState === 'RECONNECTING';
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -73,8 +77,6 @@ export function StudyScreen() {
         </div>
         <BookOpen size={22} className="shrink-0 text-sky-300" />
       </div>
-
-      <CallStatusBar />
 
       <div className="study-chat-scroll">
         {messages.map((message) =>
@@ -146,8 +148,28 @@ export function StudyScreen() {
 
       <p className="muted mt-3 text-center text-[11px] leading-5">
         Study replies are generated locally. This conversation is separate and never stored in
-        private Chat. Chat is hidden — use the profile menu → <b>Enter Secret Code</b> to return.
+        private Chat.
       </p>
+
+      {callActive ? (
+        <div className="chat-study-footer study-done-bar">
+          <div>
+            <p className="text-sm font-medium">Private call is running</p>
+            <p className="muted text-xs leading-5">
+              {formatDuration(duo.callSeconds)} · {duo.micOn ? 'your mic is on' : 'your mic is muted'}.
+              Tap Done to end the call.
+            </p>
+          </div>
+          <Button variant="danger" className="study-button" onClick={duo.hangup}>
+            <PhoneOff size={17} /> DONE · END CALL
+          </Button>
+        </div>
+      ) : (
+        <p className="muted mt-3 text-center text-[11px] leading-5">
+          Chat is hidden. Tap the profile icon → <b>Enter Secret Code</b> to return to the same
+          conversation.
+        </p>
+      )}
     </div>
   );
 }

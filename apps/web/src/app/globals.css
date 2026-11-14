@@ -68,6 +68,17 @@ button:disabled {
     var(--bg);
 }
 
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 55;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(11, 10, 18, 0.82);
+  padding-left: 0.35rem;
+  padding-right: 0.35rem;
+  backdrop-filter: blur(16px);
+}
+
 .login-shell {
   position: relative;
   display: grid;
@@ -1168,6 +1179,15 @@ button:disabled {
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.025);
   padding: 0.9rem 1rem;
+}
+
+.study-done-bar {
+  border-color: rgba(244, 63, 94, 0.24);
+  background: rgba(159, 18, 57, 0.12);
+}
+
+.chat-ai-row {
+  align-items: flex-start;
 }
 
 .call-orb {
