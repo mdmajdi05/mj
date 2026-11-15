@@ -206,13 +206,16 @@ model Call {
   participants CallParticipant[]
 }
 model CallParticipant {
-  id       String    @id @default(cuid())
-  callId   String
-  call     Call      @relation(fields: [callId], references: [id], onDelete: Cascade)
-  userId   String
-  user     User      @relation(fields: [userId], references: [id])
-  joinedAt DateTime?
-  leftAt   DateTime?
+  id           String    @id @default(cuid())
+  callId       String
+  call         Call      @relation(fields: [callId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User      @relation(fields: [userId], references: [id])
+  joinedAt     DateTime?
+  leftAt       DateTime?
+  selfMuted    Boolean   @default(false)
+  mutedByPeer  Boolean   @default(false)
+  speakerOn    Boolean   @default(true)
   @@unique([callId, userId])
 }
 model ArchivedConversation {

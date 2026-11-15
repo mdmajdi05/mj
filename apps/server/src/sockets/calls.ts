@@ -1,4 +1,4 @@
-import type { Server, Socket } from 'socket.io';
+﻿import type { Server, Socket } from 'socket.io';
 import { CallStatus, Role } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { writeAudit } from '../lib/audit';
@@ -95,6 +95,31 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
     }
   };
 
+  /**
+   * Mic = the input the other side hears. Speaker = the output this side
+   * hears. `micOn` combines both mute reasons; `speakerOn` is controlled only
+   * by its owner.
+   */
+  const micStatePayload = (call: NonNullable<Awaited<ReturnType<typeof callFor>>>) => ({
+    callId: call.id,
+    participants: call.participants.map((participant) => ({
+      userId: participant.userId,
+      micOn: !participant.selfMuted && !participant.mutedByPeer,
+      selfMuted: participant.selfMuted,
+      mutedByPeer: participant.mutedByPeer,
+      speakerOn: participant.speakerOn
+    }))
+  });
+
+  const broadcastMicState = async (callId: string) => {
+    const call = await callFor(callId);
+    if (!call) return;
+    const payload = micStatePayload(call);
+    for (const participant of call.participants) {
+      emitToUser(participant.userId, 'call:mic-state', payload);
+    }
+  };
+
   socket.on('call:invite', async () => {
     const other = await otherUser();
     if (!other) {
@@ -129,7 +154,14 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
     const call = await prisma.call.create({
       data: {
         status: CallStatus.RINGING,
-        participants: { create: [{ userId: user.id }, { userId: other.id }] }
+        participants: {
+          // Privacy default: the Host microphone stays off until the Guest
+          // allows it. The Guest microphone is always on unless they mute it.
+          create: [
+            { userId: user.id, mutedByPeer: user.role === Role.HOST },
+            { userId: other.id, mutedByPeer: other.role === Role.HOST }
+          ]
+        }
       }
     });
 
@@ -184,6 +216,7 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
         startedAt: call.startedAt
       });
     }
+    await broadcastMicState(call.id);
   });
 
   socket.on('call:decline', async (payload: { callId?: string }) => {
@@ -318,6 +351,9 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
         username: user.username
       });
     }
+    // Restore every mute/speaker choice so a refresh never silently mutes a
+    // microphone or a speaker.
+    await broadcastMicState(call.id);
   });
 
   socket.on('call:signal', async (payload: SignalPayload) => {
@@ -337,18 +373,33 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
     });
   });
 
+  /**
+   * A participant's own microphone toggle (their input, heard by the other
+   * side). Turning it back on is refused while the other side has muted it:
+   * only whoever muted it can restore it.
+   */
   socket.on('call:mic-status', async (payload: { callId?: string; enabled?: boolean }) => {
-    if (!payload?.callId) return;
-    const call = await callFor(payload.callId);
+    const call = await callFor(payload?.callId);
     if (!call || !isParticipant(call)) return;
-    const target = call.participants.find((participant) => participant.userId !== user.id);
-    if (!target) return;
-    emitToUser(target.userId, 'call:mic-status', {
-      enabled: Boolean(payload.enabled),
-      userId: user.id
+    const me = call.participants.find((participant) => participant.userId === user.id);
+    if (!me) return;
+    const enabled = Boolean(payload?.enabled);
+    if (enabled && me.mutedByPeer) {
+      socket.emit('call:mic-locked', { callId: call.id });
+      return;
+    }
+    await prisma.callParticipant.update({
+      where: { callId_userId: { callId: call.id, userId: user.id } },
+      data: { selfMuted: !enabled }
     });
+    await broadcastMicState(call.id);
   });
 
+  /**
+   * Remote microphone control: this participant mutes the other side's input
+   * so their own speaker stops receiving it. Only the participant who muted it
+   * can turn it back on.
+   */
   socket.on('call:remote-mic', async (payload: { enabled?: boolean }) => {
     const call = await prisma.call.findFirst({
       where: {
@@ -367,22 +418,29 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
     const target = call.participants.find((participant) => participant.userId !== user.id);
     if (!target) return;
 
-    // The Guest owns what they hear: they may mute or unmute the Host at any
-    // time. The Host's microphone stays off by default until that happens.
     const enabled = Boolean(payload?.enabled);
-    // The Host can never switch their own microphone back on. Only the Guest
-    // can allow it again.
-    if (user.role === Role.HOST && enabled) {
-      emitError('The other participant controls this.');
-      return;
-    }
-    emitToUser(target.userId, 'call:remote-mic', { enabled, by: user.id });
-    emitToUser(target.userId, 'call:mic-status', { enabled, userId: target.userId });
-    emitToUser(user.id, 'call:mic-status', { enabled, userId: target.userId });
-    emitToUser(user.id, 'call:remote-mic:sent', { enabled, targetUserId: target.userId });
+    await prisma.callParticipant.update({
+      where: { callId_userId: { callId: call.id, userId: target.userId } },
+      data: { mutedByPeer: !enabled }
+    });
+    await broadcastMicState(call.id);
   });
 
-  /** Host asks the Guest whether their microphone may be switched on. */
+  /**
+   * A participant's own speaker (their listening). Only they can change it;
+   * the other side may request it, never force it.
+   */
+  socket.on('call:speaker-status', async (payload: { callId?: string; enabled?: boolean }) => {
+    const call = await callFor(payload?.callId);
+    if (!call || !isParticipant(call)) return;
+    await prisma.callParticipant.update({
+      where: { callId_userId: { callId: call.id, userId: user.id } },
+      data: { speakerOn: Boolean(payload?.enabled) }
+    });
+    await broadcastMicState(call.id);
+  });
+
+  /** Either side asks to be audible again. The other side decides. */
   socket.on('call:mic-request', async () => {
     const call = await prisma.call.findFirst({
       where: {
@@ -403,7 +461,10 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
     });
   });
 
-  /** Guest's answer to that request. Accepting enables the Host microphone. */
+  /**
+   * The requested side accepted: they turn their own speaker back on, and the
+   * requester's microphone is released so the request can be heard.
+   */
   socket.on('call:mic-request:answer', async (payload: { accepted?: boolean }) => {
     const call = await prisma.call.findFirst({
       where: {
@@ -416,10 +477,16 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
     const target = call.participants.find((participant) => participant.userId !== user.id);
     if (!target) return;
     const accepted = Boolean(payload?.accepted);
-    if (accepted && user.role === Role.GUEST) {
-      emitToUser(target.userId, 'call:remote-mic', { enabled: true, by: user.id });
-      emitToUser(target.userId, 'call:mic-status', { enabled: true, userId: target.userId });
-      emitToUser(user.id, 'call:mic-status', { enabled: true, userId: target.userId });
+    if (accepted) {
+      await prisma.callParticipant.update({
+        where: { callId_userId: { callId: call.id, userId: target.userId } },
+        data: { mutedByPeer: false, selfMuted: false }
+      });
+      await prisma.callParticipant.update({
+        where: { callId_userId: { callId: call.id, userId: user.id } },
+        data: { speakerOn: true }
+      });
+      await broadcastMicState(call.id);
     }
     emitToUser(target.userId, 'call:mic-request:result', { accepted });
   });

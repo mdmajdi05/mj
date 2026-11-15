@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import {
   createContext,
@@ -79,7 +79,9 @@ export function useDuoApp() {
   const [callState, setCallState] = useState<CallState>('IDLE');
   const [callId, setCallId] = useState('');
   const [micOn, setMicOn] = useState(true);
+  const [micMutedByPeer, setMicMutedByPeer] = useState(false);
   const [remoteMicOn, setRemoteMicOn] = useState<boolean | null>(null);
+  const [remoteSpeakerOn, setRemoteSpeakerOn] = useState(true);
   const [callMuted, setCallMuted] = useState(false);
   const [incomingMicRequest, setIncomingMicRequest] = useState(false);
   const [audioOutput, setAudioOutputState] = useState<AudioOutput>('EARPIECE');
@@ -808,6 +810,8 @@ export function useDuoApp() {
     setCallId('');
     setIncomingCall(null);
     setRemoteMicOn(null);
+    setRemoteSpeakerOn(true);
+    setMicMutedByPeer(false);
     setCallSeconds(0);
     setCallStartedAt(null);
     autoAnsweredRef.current = '';
@@ -909,15 +913,15 @@ export function useDuoApp() {
     }
   }, []);
 
-  /** Host starts muted; the Guest starts with their mic on. */
   const applyDefaultMic = useCallback(() => {
-    const enabled = userRef.current?.role !== 'HOST';
+    // Nothing is auto-muted on this side. The server restores the saved mute
+    // state right after the session connects, so a refresh never changes it.
     localStreamRef.current?.getAudioTracks().forEach((track) => {
-      track.enabled = enabled;
+      track.enabled = true;
     });
-    micOnRef.current = enabled;
-    setMicOn(enabled);
-    return enabled;
+    micOnRef.current = true;
+    setMicOn(true);
+    return true;
   }, []);
 
   const startCall = useCallback(async () => {
@@ -944,7 +948,7 @@ export function useDuoApp() {
     if (!incomingCall) return;
     try {
       await ensurePeer();
-      const micEnabled = applyDefaultMic();
+      applyDefaultMic();
       setCallMuted(false);
       setCallHidden(false);
       lastOfferAtRef.current = 0;
@@ -956,14 +960,11 @@ export function useDuoApp() {
         : Date.now();
       setCallStartedAt(Number.isFinite(startedAt) ? startedAt : Date.now());
       socketRef.current?.emit('call:accept', { callId: incomingCall.callId });
-      socketRef.current?.emit('call:mic-status', {
-        callId: incomingCall.callId,
-        enabled: micEnabled
-      });
       setIncomingCall(null);
       setCallState('ACTIVE');
-      // The Host starts muted; the accepting Guest sees an explicit Unmute.
-      if (userRef.current?.role === 'GUEST') setRemoteMicOn(false);
+      // Host/Guest microphone state comes from the server's call:mic-state:
+      // the Host stays muted until the Guest allows it, and the Guest's own
+      // microphone is never muted by the session itself.
 
       const queued = pendingSignalsRef.current.splice(0);
       for (const item of queued) await handleSignal(item);
@@ -1032,48 +1033,73 @@ export function useDuoApp() {
   }, []);
 
   /**
-   * Leaving the private surface never ends the session. It mutes the local
-   * microphone and asks the backend to mute the Host, so nothing can be heard
-   * until this account explicitly unmutes the Host again.
+   * My speaker: whether this side hears the other participant. Only this side
+   * can change it; the other side can ask, never force it.
    */
-  const pauseAudioForPrivacy = useCallback(() => {
-    if (!callIdRef.current) return;
-    if (userRef.current?.role === 'GUEST') {
-      socketRef.current?.emit('call:remote-mic', { enabled: false });
-    }
-    setLocalMic(false);
-    setCallMuted(true);
-  }, [setLocalMic]);
-
-  /** Guest control over what they hear from the Host. */
-  const requestHostAudio = useCallback(
+  const setMySpeaker = useCallback(
     (enabled: boolean) => {
-      if (!callIdRef.current) return;
-      if (userRef.current?.role === 'GUEST') {
-        socketRef.current?.emit('call:remote-mic', { enabled });
-      }
       callMutedRef.current = !enabled;
       setCallMuted(!enabled);
+      if (callIdRef.current) {
+        socketRef.current?.emit('call:speaker-status', {
+          callId: callIdRef.current,
+          enabled
+        });
+      }
       if (enabled) void applyAudioOutput(audioOutput);
     },
     [applyAudioOutput, audioOutput]
   );
 
-  /** Big-button / offer-button toggle for the Host voice. */
+  /**
+   * The other participant's microphone: whether their voice reaches this
+   * side. Whoever turns it off must turn it back on.
+   */
+  const setPeerMic = useCallback((enabled: boolean) => {
+    if (!callIdRef.current) return;
+    socketRef.current?.emit('call:remote-mic', { enabled });
+    setRemoteMicOn(enabled);
+  }, []);
+
+  const togglePeerMic = useCallback(() => {
+    setPeerMic(remoteMicOn === false);
+  }, [remoteMicOn, setPeerMic]);
+
+  /** Kept for the offer button: toggles what this side hears. */
   const toggleHostAudio = useCallback(() => {
-    requestHostAudio(callMutedRef.current);
-  }, [requestHostAudio]);
+    setMySpeaker(callMutedRef.current);
+  }, [setMySpeaker]);
+
+  /** Unmute my speaker and release the other mic I had muted. */
+  const resumeListening = useCallback(() => {
+    setMySpeaker(true);
+    setPeerMic(true);
+  }, [setMySpeaker, setPeerMic]);
 
   /**
-   * Host cannot switch their own microphone on. They can only ask, and the
-   * Guest decides through the same offer-style popup.
+   * Leaving the private surface never ends the session and never touches this
+   * side's own microphone. It only silences the other side until this account
+   * explicitly asks for audio again.
    */
-  const requestHostAudioPermission = useCallback(() => {
+  const pauseAudioForPrivacy = useCallback(() => {
     if (!callIdRef.current) return;
-    if (userRef.current?.role !== 'HOST') return;
+    socketRef.current?.emit('call:remote-mic', { enabled: false });
+    socketRef.current?.emit('call:speaker-status', {
+      callId: callIdRef.current,
+      enabled: false
+    });
+    callMutedRef.current = true;
+    setCallMuted(true);
+  }, []);
+
+  /** Either side may ask to be audible again; the other side decides. */
+  const requestAudioPermission = useCallback(() => {
+    if (!callIdRef.current) return;
     socketRef.current?.emit('call:mic-request', { callId: callIdRef.current });
     showNotice('Request sent.');
   }, [showNotice]);
+
+  const requestHostAudioPermission = requestAudioPermission;
 
   const acceptMicRequest = useCallback(() => {
     setIncomingMicRequest(false);
@@ -1085,7 +1111,6 @@ export function useDuoApp() {
     }
     callMutedRef.current = false;
     setCallMuted(false);
-    setRemoteMicOn(true);
     void applyAudioOutput(audioOutput);
   }, [applyAudioOutput, audioOutput]);
 
@@ -1111,6 +1136,11 @@ export function useDuoApp() {
   }, [lockChatSession, pauseAudioForPrivacy, setScreen]);
 
   const toggleMic = useCallback(() => {
+    // The other participant muted this microphone: only they can restore it.
+    if (micMutedByPeer) {
+      showNotice('The other participant muted your mic. Send a request instead.');
+      return;
+    }
     // Read the live track state, not just React state, so a single tap always
     // flips the microphone regardless of earlier remote changes.
     const tracks = localStreamRef.current?.getAudioTracks() ?? [];
@@ -1118,29 +1148,28 @@ export function useDuoApp() {
       ? tracks.some((track) => track.enabled)
       : micOnRef.current;
     setLocalMic(!currentlyEnabled);
-  }, [setLocalMic]);
+  }, [micMutedByPeer, setLocalMic, showNotice]);
 
-  /** Explicit "step away" control: mute the Host and the local mic. */
+  /** Explicit "step away" control: silence the other side for now. */
   const guestDone = pauseAudioForPrivacy;
 
   const hideCall = useCallback(() => {
     setCallHidden(true);
-    setCallMuted(true);
-    setLocalMic(false);
-  }, [setLocalMic]);
+    pauseAudioForPrivacy();
+  }, [pauseAudioForPrivacy]);
 
   const returnToCall = useCallback(() => {
     setCallHidden(false);
-    requestHostAudio(true);
-    if (!micOn) setLocalMic(true);
-  }, [micOn, requestHostAudio, setLocalMic]);
+    resumeListening();
+  }, [resumeListening]);
 
   /** Re-creates the audio connection after a refresh or network drop. */
   const resumeSessionIfNeeded = useCallback(async () => {
     if (callIdRef.current && !pcRef.current) await resumeCall();
   }, [resumeCall]);
 
-  // Any move away from the private surfaces pauses audio and mutes the Host.
+  // Any move away from the private surfaces silences the session; the
+  // microphone state stays exactly as this account left it.
   useEffect(() => {
     if (screen === 'CHAT' || screen === 'STUDY') return;
     pauseAudioForPrivacy();
@@ -1148,19 +1177,14 @@ export function useDuoApp() {
 
   const callAction = useCallback(async () => {
     const state = callStateRef.current;
-    if (state === 'ACTIVE') {
-      if (userRef.current?.role === 'HOST') {
-        toggleMic();
-      }
-      return;
-    }
+    if (state === 'ACTIVE') return;
     if (state === 'RECONNECTING') {
       await resumeCall();
       return;
     }
     if (state === 'CONNECTING' || state === 'RINGING') return;
     await startCall();
-  }, [resumeCall, startCall, toggleMic]);
+  }, [resumeCall, startCall]);
 
   const enterStudyMode = useCallback(() => {
     // Chat stays hidden and the session goes quiet; returning to it needs the
@@ -1232,14 +1256,11 @@ export function useDuoApp() {
     });
 
     socket.on('disconnect', () => {
-      // A dropped connection never ends the session. Keep the identifier so the
-      // client can reconnect, but mute everything and close the private surface.
+      // A dropped connection never ends the session and never changes this
+      // side's microphone choice. The session is restored on reconnect.
       if (callIdRef.current) {
         setCallState('RECONNECTING');
         setCallMuted(true);
-        localStreamRef.current?.getAudioTracks().forEach((track) => {
-          track.enabled = false;
-        });
       }
       lockChatSession();
       setScreen('HOME');
@@ -1460,10 +1481,6 @@ export function useDuoApp() {
       const startedAt = payload.startedAt ? new Date(payload.startedAt).getTime() : Date.now();
       setCallStartedAt(Number.isFinite(startedAt) ? startedAt : Date.now());
       setCallState('CONNECTING');
-      socket.emit('call:mic-status', {
-        callId: payload.callId,
-        enabled: localStreamRef.current?.getAudioTracks().some((track) => track.enabled) ?? false
-      });
       await sendOffer(false);
     });
 
@@ -1497,29 +1514,49 @@ export function useDuoApp() {
         setCallState((current) => (current === 'RECONNECTING' ? 'CONNECTING' : current));
       } else if (payload?.status === 'ENDED' || payload?.status === 'DECLINED') closeLocalCall();
     });
-    socket.on('call:mic-status', (payload: { enabled?: boolean }) =>
-      setRemoteMicOn(Boolean(payload?.enabled))
-    );
-    socket.on('call:remote-mic', (payload: { enabled?: boolean }) => {
-      const enabled = Boolean(payload?.enabled);
-      localStreamRef.current?.getAudioTracks().forEach((track) => {
-        track.enabled = enabled;
-      });
-      micOnRef.current = enabled;
-      setMicOn(enabled);
-      if (callIdRef.current) {
-        socket.emit('call:mic-status', { callId: callIdRef.current, enabled });
+    /**
+     * Authoritative audio state for both participants. Applying it restores
+     * every mic/speaker choice after a reconnect or refresh, so nothing gets
+     * muted silently.
+     */
+    socket.on(
+      'call:mic-state',
+      (payload: {
+        participants?: Array<{
+          userId: string;
+          micOn: boolean;
+          selfMuted: boolean;
+          mutedByPeer: boolean;
+          speakerOn: boolean;
+        }>;
+      }) => {
+        const me = userRef.current?.id;
+        if (!me || !payload?.participants) return;
+        for (const entry of payload.participants) {
+          if (entry.userId === me) {
+            localStreamRef.current?.getAudioTracks().forEach((track) => {
+              track.enabled = entry.micOn;
+            });
+            micOnRef.current = entry.micOn;
+            setMicOn(entry.micOn);
+            setMicMutedByPeer(Boolean(entry.mutedByPeer));
+            callMutedRef.current = !entry.speakerOn;
+            setCallMuted(!entry.speakerOn);
+          } else {
+            setRemoteMicOn(entry.micOn);
+            setRemoteSpeakerOn(entry.speakerOn);
+          }
+        }
       }
+    );
+    socket.on('call:mic-locked', () => {
+      showNotice('The other participant muted your mic. Send a request to restore it.');
     });
-    socket.on('call:remote-mic:sent', () => undefined);
-    socket.on('call:mic-request', () => {
-      if (userRef.current?.role !== 'GUEST') return;
-      setIncomingMicRequest(true);
-    });
+    socket.on('call:mic-request', () => setIncomingMicRequest(true));
     socket.on('call:mic-request:result', (payload: { accepted?: boolean }) => {
       showNotice(
         payload?.accepted
-          ? 'Microphone is on.'
+          ? 'Audio is allowed again.'
           : 'The other participant did not accept.'
       );
     });
@@ -1935,11 +1972,16 @@ export function useDuoApp() {
     callState,
     callId,
     micOn,
+    micMutedByPeer,
     remoteMicOn,
+    remoteSpeakerOn,
     callMuted,
     audioOutput,
     setAudioOutput,
-    requestHostAudio,
+    setMySpeaker,
+    setPeerMic,
+    togglePeerMic,
+    resumeListening,
     toggleHostAudio,
     incomingMicRequest,
     requestHostAudioPermission,
