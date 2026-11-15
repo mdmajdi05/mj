@@ -1454,6 +1454,74 @@ button:disabled {
   color: #fecaca;
 }
 
+/* Guest's primary action: a single large Mute button. */
+.call-panel-mute-big {
+  display: inline-flex;
+  flex: 1 1 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  border-radius: 12px;
+  background: linear-gradient(140deg, rgba(190, 24, 93, 0.55), rgba(136, 19, 55, 0.65));
+  padding: 0.6rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #fff1f2;
+  transition: filter 150ms ease;
+}
+
+.call-panel-mute-big:hover {
+  filter: brightness(1.12);
+}
+
+/* Session options sheet opened from the offer control. */
+.call-options {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.call-option {
+  display: grid;
+  gap: 0.15rem;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+
+.call-option:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.call-option:disabled {
+  opacity: 0.45;
+}
+
+.call-option.is-on {
+  border-color: rgba(192, 132, 252, 0.5);
+  background: rgba(168, 85, 247, 0.18);
+}
+
+.call-option-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.call-option-hint {
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.call-option-row {
+  display: flex;
+  gap: 0.4rem;
+}
+
 .chat-head {
   display: flex;
   flex-shrink: 0;

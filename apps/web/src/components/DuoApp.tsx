@@ -16,7 +16,7 @@ import { PromoScreen } from '@/components/PromoScreen';
 import { RestoreScreen } from '@/components/RestoreScreen';
 import { SettingsScreen } from '@/components/SettingsScreen';
 import { AdminScreen } from '@/components/AdminScreen';
-import { IncomingCallBar } from '@/components/CallControls';
+import { IncomingCallBar, MicRequestBar } from '@/components/CallControls';
 import { Spinner } from '@/components/ui';
 
 export default function DuoApp({ hostMode = false }: { hostMode?: boolean }) {
@@ -95,6 +95,7 @@ function DuoShell({ hostMode }: { hostMode: boolean }) {
       <audio ref={duo.remoteAudioRef} autoPlay playsInline className="hidden" />
 
       <IncomingCallBar />
+      <MicRequestBar />
 
       <div className="toast-stack" aria-live="polite">
         {duo.error && (

@@ -370,9 +370,57 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
     // The Guest owns what they hear: they may mute or unmute the Host at any
     // time. The Host's microphone stays off by default until that happens.
     const enabled = Boolean(payload?.enabled);
+    // The Host can never switch their own microphone back on. Only the Guest
+    // can allow it again.
+    if (user.role === Role.HOST && enabled) {
+      emitError('The other participant controls this.');
+      return;
+    }
     emitToUser(target.userId, 'call:remote-mic', { enabled, by: user.id });
     emitToUser(target.userId, 'call:mic-status', { enabled, userId: target.userId });
     emitToUser(user.id, 'call:mic-status', { enabled, userId: target.userId });
     emitToUser(user.id, 'call:remote-mic:sent', { enabled, targetUserId: target.userId });
+  });
+
+  /** Host asks the Guest whether their microphone may be switched on. */
+  socket.on('call:mic-request', async () => {
+    const call = await prisma.call.findFirst({
+      where: {
+        status: CallStatus.ACTIVE,
+        participants: { some: { userId: user.id } }
+      },
+      include: { participants: true }
+    });
+    if (!call) {
+      emitError('No active session.');
+      return;
+    }
+    const target = call.participants.find((participant) => participant.userId !== user.id);
+    if (!target) return;
+    emitToUser(target.userId, 'call:mic-request', {
+      callId: call.id,
+      from: user.username
+    });
+  });
+
+  /** Guest's answer to that request. Accepting enables the Host microphone. */
+  socket.on('call:mic-request:answer', async (payload: { accepted?: boolean }) => {
+    const call = await prisma.call.findFirst({
+      where: {
+        status: CallStatus.ACTIVE,
+        participants: { some: { userId: user.id } }
+      },
+      include: { participants: true }
+    });
+    if (!call) return;
+    const target = call.participants.find((participant) => participant.userId !== user.id);
+    if (!target) return;
+    const accepted = Boolean(payload?.accepted);
+    if (accepted && user.role === Role.GUEST) {
+      emitToUser(target.userId, 'call:remote-mic', { enabled: true, by: user.id });
+      emitToUser(target.userId, 'call:mic-status', { enabled: true, userId: target.userId });
+      emitToUser(user.id, 'call:mic-status', { enabled: true, userId: target.userId });
+    }
+    emitToUser(target.userId, 'call:mic-request:result', { accepted });
   });
 }

@@ -81,7 +81,10 @@ export function useDuoApp() {
   const [micOn, setMicOn] = useState(true);
   const [remoteMicOn, setRemoteMicOn] = useState<boolean | null>(null);
   const [callMuted, setCallMuted] = useState(false);
+  const [incomingMicRequest, setIncomingMicRequest] = useState(false);
   const [audioOutput, setAudioOutputState] = useState<AudioOutput>('EARPIECE');
+  const micOnRef = useRef(true);
+  const callMutedRef = useRef(false);
   const [callHidden, setCallHidden] = useState(false);
   const [callSeconds, setCallSeconds] = useState(0);
   const [callStartedAt, setCallStartedAt] = useState<number | null>(null);
@@ -124,6 +127,8 @@ export function useDuoApp() {
   prefsRef.current = prefs;
   activePeerRef.current = activePeerId;
   callStateRef.current = callState;
+  micOnRef.current = micOn;
+  callMutedRef.current = callMuted;
   callHiddenRef.current = callHidden;
 
   const setScreen = useCallback((next: Screen) => {
@@ -809,6 +814,7 @@ export function useDuoApp() {
     lastOfferAtRef.current = 0;
     setCallHidden(false);
     setCallMuted(false);
+    setIncomingMicRequest(false);
     setAudioOutputState('EARPIECE');
     setMicOn(true);
   }, []);
@@ -868,7 +874,9 @@ export function useDuoApp() {
     }
     rememberBrowserGrant('mic');
     localStreamRef.current = stream;
-    setMicOn(stream.getAudioTracks().every((track) => track.enabled));
+    const tracksEnabled = stream.getAudioTracks().every((track) => track.enabled);
+    micOnRef.current = tracksEnabled;
+    setMicOn(tracksEnabled);
     const peer = new RTCPeerConnection({
       iceServers,
       iceCandidatePoolSize: 10,
@@ -907,6 +915,7 @@ export function useDuoApp() {
     localStreamRef.current?.getAudioTracks().forEach((track) => {
       track.enabled = enabled;
     });
+    micOnRef.current = enabled;
     setMicOn(enabled);
     return enabled;
   }, []);
@@ -1012,6 +1021,7 @@ export function useDuoApp() {
     localStreamRef.current?.getAudioTracks().forEach((track) => {
       track.enabled = enabled;
     });
+    micOnRef.current = enabled;
     setMicOn(enabled);
     if (callIdRef.current) {
       socketRef.current?.emit('call:mic-status', {
@@ -1042,11 +1052,52 @@ export function useDuoApp() {
       if (userRef.current?.role === 'GUEST') {
         socketRef.current?.emit('call:remote-mic', { enabled });
       }
+      callMutedRef.current = !enabled;
       setCallMuted(!enabled);
       if (enabled) void applyAudioOutput(audioOutput);
     },
     [applyAudioOutput, audioOutput]
   );
+
+  /** Big-button / offer-button toggle for the Host voice. */
+  const toggleHostAudio = useCallback(() => {
+    requestHostAudio(callMutedRef.current);
+  }, [requestHostAudio]);
+
+  /**
+   * Host cannot switch their own microphone on. They can only ask, and the
+   * Guest decides through the same offer-style popup.
+   */
+  const requestHostAudioPermission = useCallback(() => {
+    if (!callIdRef.current) return;
+    if (userRef.current?.role !== 'HOST') return;
+    socketRef.current?.emit('call:mic-request', { callId: callIdRef.current });
+    showNotice('Request sent.');
+  }, [showNotice]);
+
+  const acceptMicRequest = useCallback(() => {
+    setIncomingMicRequest(false);
+    if (callIdRef.current) {
+      socketRef.current?.emit('call:mic-request:answer', {
+        callId: callIdRef.current,
+        accepted: true
+      });
+    }
+    callMutedRef.current = false;
+    setCallMuted(false);
+    setRemoteMicOn(true);
+    void applyAudioOutput(audioOutput);
+  }, [applyAudioOutput, audioOutput]);
+
+  const declineMicRequest = useCallback(() => {
+    setIncomingMicRequest(false);
+    if (callIdRef.current) {
+      socketRef.current?.emit('call:mic-request:answer', {
+        callId: callIdRef.current,
+        accepted: false
+      });
+    }
+  }, []);
 
   /** Explicit Chat close: pause the session, forget the chat session, go home. */
   const closePrivateChat = useCallback(() => {
@@ -1060,8 +1111,14 @@ export function useDuoApp() {
   }, [lockChatSession, pauseAudioForPrivacy, setScreen]);
 
   const toggleMic = useCallback(() => {
-    setLocalMic(!micOn);
-  }, [micOn, setLocalMic]);
+    // Read the live track state, not just React state, so a single tap always
+    // flips the microphone regardless of earlier remote changes.
+    const tracks = localStreamRef.current?.getAudioTracks() ?? [];
+    const currentlyEnabled = tracks.length
+      ? tracks.some((track) => track.enabled)
+      : micOnRef.current;
+    setLocalMic(!currentlyEnabled);
+  }, [setLocalMic]);
 
   /** Explicit "step away" control: mute the Host and the local mic. */
   const guestDone = pauseAudioForPrivacy;
@@ -1448,12 +1505,24 @@ export function useDuoApp() {
       localStreamRef.current?.getAudioTracks().forEach((track) => {
         track.enabled = enabled;
       });
+      micOnRef.current = enabled;
       setMicOn(enabled);
       if (callIdRef.current) {
         socket.emit('call:mic-status', { callId: callIdRef.current, enabled });
       }
     });
     socket.on('call:remote-mic:sent', () => undefined);
+    socket.on('call:mic-request', () => {
+      if (userRef.current?.role !== 'GUEST') return;
+      setIncomingMicRequest(true);
+    });
+    socket.on('call:mic-request:result', (payload: { accepted?: boolean }) => {
+      showNotice(
+        payload?.accepted
+          ? 'Microphone is on.'
+          : 'The other participant did not accept.'
+      );
+    });
     socket.on('call:peer-offline', () => {
       if (!callIdRef.current) return;
       setCallState((current) => (current === 'IDLE' ? current : 'RECONNECTING'));
@@ -1871,6 +1940,11 @@ export function useDuoApp() {
     audioOutput,
     setAudioOutput,
     requestHostAudio,
+    toggleHostAudio,
+    incomingMicRequest,
+    requestHostAudioPermission,
+    acceptMicRequest,
+    declineMicRequest,
     resumeSessionIfNeeded,
     callHidden,
     callSeconds,
