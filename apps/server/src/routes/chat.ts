@@ -658,7 +658,8 @@ chatRouter.get(
       sound: notifications?.sound ?? false,
       browser: notifications?.browser ?? false,
       activitySharing: notifications?.activitySharing ?? false,
-      reducedMotion: userPreferences?.reducedMotion ?? false
+      reducedMotion: userPreferences?.reducedMotion ?? false,
+      defaultPeerMicOn: userPreferences?.defaultPeerMicOn ?? true
     });
   })
 );
@@ -672,12 +673,13 @@ chatRouter.post(
         sound: z.boolean().optional(),
         browser: z.boolean().optional(),
         activitySharing: z.boolean().optional(),
-        reducedMotion: z.boolean().optional()
+        reducedMotion: z.boolean().optional(),
+        defaultPeerMicOn: z.boolean().optional()
       })
       .safeParse(req.body);
     if (!parsed.success) throw new HttpError(400, 'Invalid preferences');
 
-    const { reducedMotion, ...notificationPreferences } = parsed.data;
+    const { reducedMotion, defaultPeerMicOn, ...notificationPreferences } = parsed.data;
     if (Object.keys(notificationPreferences).length > 0) {
       await prisma.notificationPreference.upsert({
         where: { userId: req.user!.id },
@@ -690,6 +692,13 @@ chatRouter.post(
         where: { userId: req.user!.id },
         create: { userId: req.user!.id, reducedMotion },
         update: { reducedMotion }
+      });
+    }
+    if (defaultPeerMicOn !== undefined) {
+      await prisma.userPreference.upsert({
+        where: { userId: req.user!.id },
+        create: { userId: req.user!.id, defaultPeerMicOn },
+        update: { defaultPeerMicOn }
       });
     }
     if (notificationPreferences.activitySharing !== undefined) {

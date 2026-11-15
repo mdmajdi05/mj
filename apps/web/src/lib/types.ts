@@ -34,7 +34,7 @@ export type Screen =
 
 export type MessageDestination = 'CHAT' | 'GAME';
 
-export type AudioOutput = 'EARPIECE' | 'SPEAKER';
+export type AudioOutput = 'EARPIECE' | 'SPEAKER' | 'BLUETOOTH';
 
 export type Message = {
   id: string;
@@ -86,6 +86,7 @@ export type Preferences = {
   browser: boolean;
   activitySharing: boolean;
   reducedMotion: boolean;
+  defaultPeerMicOn: boolean;
 };
 
 export type CallParticipant = {

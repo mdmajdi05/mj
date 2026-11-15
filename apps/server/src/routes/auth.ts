@@ -135,7 +135,10 @@ authRouter.post(
       .createMany({ data: [{ userId: guest.id }], skipDuplicates: true })
       .catch(() => undefined);
     await prisma.userPreference
-      .createMany({ data: [{ userId: guest.id }], skipDuplicates: true })
+      .createMany({
+        data: [{ userId: guest.id, defaultPeerMicOn: false }],
+        skipDuplicates: true
+      })
       .catch(() => undefined);
     await prisma.screenPreference
       .createMany({

@@ -151,15 +151,30 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
       });
     }
 
+    const [minePref, otherPref] = await Promise.all([
+      prisma.userPreference.findUnique({ where: { userId: user.id } }),
+      prisma.userPreference.findUnique({ where: { userId: other.id } })
+    ]);
+    // Each account chooses the default state of the other participant's mic.
+    // The Host controls the Guest mic; the Guest controls the Host mic.
+    const hostPref = user.role === Role.HOST ? minePref : otherPref;
+    const guestPref = user.role === Role.GUEST ? minePref : otherPref;
+    const hostMicDenied = !(guestPref?.defaultPeerMicOn ?? false);
+    const guestMicDenied = !(hostPref?.defaultPeerMicOn ?? true);
+
     const call = await prisma.call.create({
       data: {
         status: CallStatus.RINGING,
         participants: {
-          // Privacy default: the Host microphone stays off until the Guest
-          // allows it. The Guest microphone is always on unless they mute it.
           create: [
-            { userId: user.id, mutedByPeer: user.role === Role.HOST },
-            { userId: other.id, mutedByPeer: other.role === Role.HOST }
+            {
+              userId: user.id,
+              mutedByPeer: user.role === Role.HOST ? hostMicDenied : guestMicDenied
+            },
+            {
+              userId: other.id,
+              mutedByPeer: other.role === Role.HOST ? hostMicDenied : guestMicDenied
+            }
           ]
         }
       }
@@ -421,7 +436,11 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
     const enabled = Boolean(payload?.enabled);
     await prisma.callParticipant.update({
       where: { callId_userId: { callId: call.id, userId: target.userId } },
-      data: { mutedByPeer: !enabled }
+      // Granting permission also switches the target microphone ON; after that
+      // they can mute/unmute their own microphone independently.
+      data: enabled
+        ? { mutedByPeer: false, selfMuted: false }
+        : { mutedByPeer: true }
     });
     await broadcastMicState(call.id);
   });

@@ -19,6 +19,7 @@ export function SettingsScreen() {
   const [newPassword, setNewPassword] = useState('');
   const [passwordBusy, setPasswordBusy] = useState(false);
   const [passwordMessage, setPasswordMessage] = useState('');
+  const peerLabel = duo.user?.role === 'HOST' ? 'User' : 'Host';
 
   async function changePassword(event: React.FormEvent) {
     event.preventDefault();
@@ -185,6 +186,27 @@ export function SettingsScreen() {
           </Button>
         </Panel>
       </div>
+
+      <Panel className="mt-4 p-5">
+        <p className="eyebrow">Call defaults</p>
+        <h3 className="mt-1 text-lg font-semibold">Microphone at call start</h3>
+        <div className="mt-2">
+          <Toggle
+            label={`${peerLabel}'s microphone starts ON`}
+            description={`Applies to every new session. When off, ${peerLabel}'s microphone starts disabled and only you can grant it again.`}
+            checked={duo.prefs.defaultPeerMicOn}
+            onChange={() =>
+              void duo.updatePreference({
+                defaultPeerMicOn: !duo.prefs.defaultPeerMicOn
+              })
+            }
+          />
+        </div>
+        <p className="muted mt-2 text-xs leading-5">
+          Your own microphone always starts as you left it and is never muted automatically. You
+          can change the other participant&apos;s microphone during a session at any time.
+        </p>
+      </Panel>
     </>
   );
 }

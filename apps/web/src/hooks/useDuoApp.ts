@@ -48,7 +48,8 @@ const defaultPreferences: Preferences = {
   sound: false,
   browser: false,
   activitySharing: false,
-  reducedMotion: false
+  reducedMotion: false,
+  defaultPeerMicOn: true
 };
 
 export function useDuoApp() {
@@ -81,6 +82,7 @@ export function useDuoApp() {
   const [micOn, setMicOn] = useState(true);
   const [micMutedByPeer, setMicMutedByPeer] = useState(false);
   const [remoteMicOn, setRemoteMicOn] = useState<boolean | null>(null);
+  const [remotePermissionOn, setRemotePermissionOn] = useState(true);
   const [remoteSpeakerOn, setRemoteSpeakerOn] = useState(true);
   const [callMuted, setCallMuted] = useState(false);
   const [incomingMicRequest, setIncomingMicRequest] = useState(false);
@@ -204,8 +206,9 @@ export function useDuoApp() {
   }, [setGuestMicConsent]);
 
   /**
-   * Routes the remote audio to the earpiece or the loudspeaker. Browsers that
-   * do not support output selection fall back to the device default.
+   * Routes the remote audio to the earpiece, the loudspeaker or a Bluetooth
+   * output. Browsers that do not support output selection fall back to the
+   * device default.
    */
   const applyAudioOutput = useCallback(
     async (mode: AudioOutput) => {
@@ -230,6 +233,19 @@ export function useDuoApp() {
         }
         const devices = await navigator.mediaDevices.enumerateDevices();
         const outputs = devices.filter((device) => device.kind === 'audiooutput');
+        if (mode === 'BLUETOOTH') {
+          const bluetooth = outputs.find((device) =>
+            /bluetooth|airpods|buds|wireless|bt\b/i.test(device.label)
+          );
+          if (bluetooth) {
+            await audio.setSinkId(bluetooth.deviceId);
+            return;
+          }
+          showNotice(
+            'No Bluetooth audio output found. Pair it in the device settings and try again.'
+          );
+          return;
+        }
         const privateDevice = outputs.find((device) =>
           /earpiece|receiver|headset|headphone|earbud/i.test(device.label)
         );
@@ -810,6 +826,7 @@ export function useDuoApp() {
     setCallId('');
     setIncomingCall(null);
     setRemoteMicOn(null);
+    setRemotePermissionOn(true);
     setRemoteSpeakerOn(true);
     setMicMutedByPeer(false);
     setCallSeconds(0);
@@ -1544,6 +1561,7 @@ export function useDuoApp() {
             setCallMuted(!entry.speakerOn);
           } else {
             setRemoteMicOn(entry.micOn);
+            setRemotePermissionOn(!entry.mutedByPeer);
             setRemoteSpeakerOn(entry.speakerOn);
           }
         }
@@ -1974,6 +1992,7 @@ export function useDuoApp() {
     micOn,
     micMutedByPeer,
     remoteMicOn,
+    remotePermissionOn,
     remoteSpeakerOn,
     callMuted,
     audioOutput,

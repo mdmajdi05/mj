@@ -175,6 +175,7 @@ model UserPreference {
   reducedMotion  Boolean @default(false)
   theme          String  @default("dark")
   activePeerId   String?
+  defaultPeerMicOn Boolean @default(true)
 }
 model AccessCode {
   id        String   @id @default(cuid())

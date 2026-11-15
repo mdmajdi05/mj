@@ -1,17 +1,83 @@
 'use client';
 
 import { useState } from 'react';
-import { Ticket, VolumeX } from 'lucide-react';
+import { Mic, MicOff, Ticket, VolumeX } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
 import { Button, Modal } from '@/components/ui';
+
+const otherName = (role?: string) => (role === 'HOST' ? 'User' : 'Host');
+
+/**
+ * Controls the other participant's microphone.
+ * - Allowed + active: a large red Mute button.
+ * - Disabled by this side: a small UNMUTE button (confirmation required).
+ * - Allowed but self-muted by them: a neutral status, no action needed.
+ */
+function RemoteMicControl({ compact = false }: { compact?: boolean }) {
+  const duo = useDuo();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const name = otherName(duo.user?.role);
+
+  if (!duo.remotePermissionOn) {
+    return (
+      <>
+        <button
+          type="button"
+          className="call-panel-btn is-on"
+          onClick={() => setConfirmOpen(true)}
+        >
+          UNMUTE {name}
+        </button>
+        <Modal
+          open={confirmOpen}
+          title={`Turn on ${name}'s microphone?`}
+          onClose={() => setConfirmOpen(false)}
+        >
+          <p className="muted text-sm leading-6">
+            This switches {name}&apos;s microphone ON. They can then mute or unmute
+            their own microphone independently.
+          </p>
+          <div className="mt-5 flex justify-end gap-2">
+            <Button onClick={() => setConfirmOpen(false)}>Cancel</Button>
+            <Button
+              variant="primary"
+              onClick={() => {
+                setConfirmOpen(false);
+                duo.setPeerMic(true);
+              }}
+            >
+              Turn on
+            </Button>
+          </div>
+        </Modal>
+      </>
+    );
+  }
+
+  if (duo.remoteMicOn === false) {
+    return (
+      <span className="call-panel-status">{name} mic: Muted</span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className={compact ? 'call-panel-btn is-end' : 'call-panel-mute-big'}
+      onClick={() => duo.setPeerMic(false)}
+      title={`Mute ${name}'s microphone`}
+    >
+      <VolumeX size={compact ? 14 : 18} /> Mute {name}&apos;s mic
+    </button>
+  );
+}
 
 /**
  * The small offer control in Chat and Study. It deliberately never looks or
  * reads like a call: tapping it opens a purchase confirmation, and the session
  * only starts after "Buy".
  *
- * During a session the same control opens the session options, so either side
- * can control their own mic, their own speaker and the other side's mic.
+ * During a session the same control opens the same three controls in a sheet.
  */
 export function CallOrb() {
   const duo = useDuo();
@@ -29,7 +95,7 @@ export function CallOrb() {
           ? 'call-orb-ringing'
           : '';
   const isHost = duo.user?.role === 'HOST';
-  const peerMicMuted = duo.remoteMicOn === false;
+  const name = otherName(duo.user?.role);
   const canRequest = duo.micMutedByPeer || duo.remoteSpeakerOn === false;
 
   return (
@@ -78,55 +144,73 @@ export function CallOrb() {
         <div className="call-options">
           <button
             type="button"
-            className={`call-option ${duo.callMuted ? '' : 'is-on'}`}
-            onClick={() => (duo.callMuted ? duo.resumeListening() : duo.setMySpeaker(false))}
-          >
-            <span className="call-option-label">
-              {duo.callMuted ? 'Unmute speaker' : 'Mute speaker'}
-            </span>
-            <span className="call-option-hint">
-              {duo.callMuted
-                ? 'Start hearing the other side again'
-                : 'Stop hearing the other side until you allow it'}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            className={`call-option ${!duo.micOn ? 'is-on' : ''}`}
+            className={`call-option ${duo.micMutedByPeer ? 'is-on' : ''}`}
             onClick={duo.toggleMic}
             disabled={duo.micMutedByPeer}
           >
             <span className="call-option-label">
               {duo.micMutedByPeer
-                ? 'Your mic is muted by the other side'
+                ? `Your mic is disabled by ${name}`
                 : duo.micOn
                   ? 'Mute my mic'
                   : 'Unmute my mic'}
             </span>
             <span className="call-option-hint">
               {duo.micMutedByPeer
-                ? 'Only they can restore it — send a request'
+                ? 'Only they can grant it again — send a request'
                 : duo.micOn
                   ? 'Stop sending your voice'
                   : 'Start sending your voice'}
             </span>
           </button>
 
-          <button
-            type="button"
-            className={`call-option ${peerMicMuted ? 'is-on' : ''}`}
-            onClick={duo.togglePeerMic}
-          >
+          <div className="call-option">
+            <span className="call-option-label">Speaker</span>
+            <div className="call-option-row mt-1">
+              <button
+                type="button"
+                className={`call-panel-btn ${duo.audioOutput === 'EARPIECE' ? 'is-on' : ''}`}
+                onClick={() => duo.setAudioOutput('EARPIECE')}
+              >
+                Earpiece
+              </button>
+              <button
+                type="button"
+                className={`call-panel-btn ${duo.audioOutput === 'SPEAKER' ? 'is-on' : ''}`}
+                onClick={() => duo.setAudioOutput('SPEAKER')}
+              >
+                Speaker
+              </button>
+              <button
+                type="button"
+                className={`call-panel-btn ${duo.audioOutput === 'BLUETOOTH' ? 'is-on' : ''}`}
+                onClick={() => duo.setAudioOutput('BLUETOOTH')}
+              >
+                Bluetooth
+              </button>
+            </div>
+          </div>
+
+          <div className="call-option">
             <span className="call-option-label">
-              {peerMicMuted ? 'Unmute their mic' : 'Mute their mic'}
+              {name}&apos;s microphone:{' '}
+              {!duo.remotePermissionOn
+                ? 'Disabled by you'
+                : duo.remoteMicOn === false
+                  ? 'Muted'
+                  : 'Active'}
             </span>
-            <span className="call-option-hint">
-              {peerMicMuted
-                ? 'Only you can restore it'
-                : 'Stop their voice reaching you'}
-            </span>
-          </button>
+            <div className="call-option-row mt-1">
+              <RemoteMicControl compact />
+            </div>
+          </div>
+
+          {duo.callMuted && (
+            <button type="button" className="call-option" onClick={duo.resumeListening}>
+              <span className="call-option-label">Unmute audio</span>
+              <span className="call-option-hint">Start hearing the session again</span>
+            </button>
+          )}
 
           {canRequest && (
             <button
@@ -143,23 +227,6 @@ export function CallOrb() {
               </span>
             </button>
           )}
-
-          <div className="call-option-row">
-            <button
-              type="button"
-              className={`call-panel-btn ${duo.audioOutput === 'SPEAKER' ? 'is-on' : ''}`}
-              onClick={() => duo.setAudioOutput('SPEAKER')}
-            >
-              Loudspeaker
-            </button>
-            <button
-              type="button"
-              className={`call-panel-btn ${duo.audioOutput === 'EARPIECE' ? 'is-on' : ''}`}
-              onClick={() => duo.setAudioOutput('EARPIECE')}
-            >
-              Earpiece
-            </button>
-          </div>
 
           {isHost && (
             <Button
@@ -180,10 +247,10 @@ export function CallOrb() {
 }
 
 /**
- * Compact in-session panel. No call wording anywhere.
- * - Big Mute button = stop hearing the other side (your speaker).
- * - "Mute mic" = stop sending your own voice.
- * - "Mute their mic" = stop their voice reaching you (only you can undo it).
+ * In-session panel with exactly three controls on both sides:
+ * 1. Mic — this side's own microphone.
+ * 2. Speaker — output routing (Earpiece / Speaker / Bluetooth).
+ * 3. Remote mic control — allow or disable the other participant's mic.
  */
 export function CallPanel() {
   const duo = useDuo();
@@ -193,23 +260,23 @@ export function CallPanel() {
   if (!active) return null;
 
   const isHost = duo.user?.role === 'HOST';
-  const peerMicMuted = duo.remoteMicOn === false;
+  const name = otherName(duo.user?.role);
+  const ownStatus = duo.micMutedByPeer ? `Disabled by ${name}` : duo.micOn ? 'Active' : 'Muted';
+  const remoteStatus = !duo.remotePermissionOn
+    ? 'Disabled by you'
+    : duo.remoteMicOn === false
+      ? 'Muted'
+      : 'Active';
 
   return (
     <div className="call-panel" role="group" aria-label="Session controls">
-      {state === 'RECONNECTING' && (
-        <span className="call-panel-status">Reconnecting…</span>
-      )}
-
-      {!duo.callMuted && duo.remoteMicOn !== false && (
-        <button
-          type="button"
-          className="call-panel-mute-big"
-          onClick={() => duo.setMySpeaker(false)}
-        >
-          <VolumeX size={18} /> Mute speaker
-        </button>
-      )}
+      <div className="call-panel-status-row">
+        <span>Your mic: {ownStatus}</span>
+        <span>
+          {name} mic: {remoteStatus}
+        </span>
+        {state === 'RECONNECTING' && <span className="call-panel-status">Reconnecting…</span>}
+      </div>
 
       <div className="call-panel-actions">
         <button
@@ -219,32 +286,50 @@ export function CallPanel() {
           disabled={duo.micMutedByPeer}
           title={
             duo.micMutedByPeer
-              ? 'The other side muted your mic. Only they can restore it.'
+              ? `${name} disabled your microphone. Only they can grant it again.`
               : undefined
           }
         >
-          {duo.micMutedByPeer
-            ? 'Mic muted'
-            : duo.micOn
-              ? 'Mute mic'
-              : 'Unmute mic'}
+          {duo.micOn ? <Mic size={14} /> : <MicOff size={14} />}
+          {duo.micMutedByPeer ? 'Mic disabled' : duo.micOn ? 'Mute mic' : 'Unmute mic'}
         </button>
-        <button
-          type="button"
-          className={`call-panel-btn ${peerMicMuted ? 'is-on' : ''}`}
-          onClick={duo.togglePeerMic}
-        >
-          {peerMicMuted ? 'Unmute their mic' : 'Mute their mic'}
-        </button>
+
+        <span className="call-panel-speaker" role="group" aria-label="Speaker output">
+          <button
+            type="button"
+            className={`call-panel-btn ${duo.audioOutput === 'EARPIECE' ? 'is-on' : ''}`}
+            onClick={() => duo.setAudioOutput('EARPIECE')}
+          >
+            Earpiece
+          </button>
+          <button
+            type="button"
+            className={`call-panel-btn ${duo.audioOutput === 'SPEAKER' ? 'is-on' : ''}`}
+            onClick={() => duo.setAudioOutput('SPEAKER')}
+          >
+            Speaker
+          </button>
+          <button
+            type="button"
+            className={`call-panel-btn ${duo.audioOutput === 'BLUETOOTH' ? 'is-on' : ''}`}
+            onClick={() => duo.setAudioOutput('BLUETOOTH')}
+          >
+            Bluetooth
+          </button>
+        </span>
+
+        <RemoteMicControl />
+
         {duo.callMuted && (
           <button
             type="button"
             className="call-panel-btn is-on"
-            onClick={() => duo.resumeListening()}
+            onClick={duo.resumeListening}
           >
-            Unmute speaker
+            Unmute audio
           </button>
         )}
+
         {(duo.micMutedByPeer || duo.remoteSpeakerOn === false) && (
           <button
             type="button"
@@ -254,20 +339,7 @@ export function CallPanel() {
             Request audio
           </button>
         )}
-        <button
-          type="button"
-          className={`call-panel-btn ${duo.audioOutput === 'SPEAKER' ? 'is-on' : ''}`}
-          onClick={() => duo.setAudioOutput('SPEAKER')}
-        >
-          Loudspeaker
-        </button>
-        <button
-          type="button"
-          className={`call-panel-btn ${duo.audioOutput === 'EARPIECE' ? 'is-on' : ''}`}
-          onClick={() => duo.setAudioOutput('EARPIECE')}
-        >
-          Earpiece
-        </button>
+
         {isHost && (
           <button type="button" className="call-panel-btn is-end" onClick={duo.hangup}>
             End
@@ -306,8 +378,8 @@ export function IncomingCallBar() {
 }
 
 /**
- * The other side asked for audio. Answering here is the only way their voice
- * or microphone state changes; nothing is forced.
+ * The other side asked for audio. Answering here is the only way their audio
+ * state changes; nothing is forced.
  */
 export function MicRequestBar() {
   const duo = useDuo();
