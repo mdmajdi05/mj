@@ -13,23 +13,27 @@ import { HttpError } from '../lib/http-error';
 import { prisma, requireAuth, requireHost, type AuthRequest } from '../middleware/auth';
 import {
   destinationOf,
-  findActiveConversation,
+  findConversationFor,
   findRestorableConversation,
   getConversationForNewMessage,
   getConversationSummary
 } from '../services/conversations';
+import { contactsFor, pairFor, peerFor, selectPeer } from '../services/peer';
 import { notifyUser, emitToUser } from '../services/notifier';
 import { onlineUserIds } from '../services/presence';
 
 export const chatRouter = Router();
 chatRouter.use(requireAuth);
 
+// Ten wrong code attempts per 30 seconds. Successful checks are skipped so a
+// legitimate user is never locked out after entering the correct code.
 const codeLimit = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 8,
+  windowMs: 30 * 1000,
+  limit: 1000,
+  skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Too many code attempts. Please try again in 15 minutes.' }
+  message: { error: 'Too many wrong attempts. Please wait 30 seconds and try again.' }
 });
 
 const screenNames = [
@@ -59,9 +63,15 @@ const requireChatUnlock = asyncHandler(async (req: AuthRequest, _res, next) => {
 });
 
 async function otherUser(userId: string) {
-  const other = await prisma.user.findFirst({ where: { id: { not: userId } } });
-  if (!other) throw new HttpError(500, 'The second account is not configured.');
-  return other;
+  const peer = await peerFor(userId);
+  if (!peer) throw new HttpError(500, 'No chat partner is configured.');
+  return peer;
+}
+
+async function pairOrThrow(userId: string) {
+  const pair = await pairFor(userId);
+  if (!pair) throw new HttpError(500, 'No chat partner is configured.');
+  return pair;
 }
 
 async function audit(actorId: string, action: string, targetId?: string, metadata?: object) {
@@ -118,7 +128,7 @@ async function notifyPreferenceChange(userId: string, activitySharing: boolean |
 chatRouter.get(
   '/summary',
   asyncHandler(async (req: AuthRequest, res) => {
-    const [summary, activeCall] = await Promise.all([
+    const [summary, activeCall, contacts] = await Promise.all([
       getConversationSummary(req.user!.id),
       prisma.call.findFirst({
         where: {
@@ -127,14 +137,35 @@ chatRouter.get(
         },
         orderBy: { startedAt: 'desc' },
         include: { participants: { include: { user: { select: { username: true } } } } }
-      })
+      }),
+      contactsFor(req.user!.id, onlineUserIds())
     ]);
     res.json({
       ...summary,
       activeCall,
       onlineUserIds: onlineUserIds(),
+      contacts,
       chatUnlocked: req.user!.chatUnlocked
     });
+  })
+);
+
+chatRouter.get(
+  '/contacts',
+  asyncHandler(async (req: AuthRequest, res) => {
+    res.json(await contactsFor(req.user!.id, onlineUserIds()));
+  })
+);
+
+chatRouter.post(
+  '/peer',
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z.object({ peerId: z.string().min(1) }).safeParse(req.body);
+    if (!parsed.success) throw new HttpError(400, 'Invalid account');
+    if (req.user!.role !== Role.HOST) throw new HttpError(403, 'Host access only');
+    const guest = await selectPeer(req.user!.id, parsed.data.peerId);
+    if (!guest) throw new HttpError(404, 'Account not found');
+    res.json({ ok: true, peerId: guest.id });
   })
 );
 
@@ -142,7 +173,7 @@ chatRouter.get(
   '/messages',
   requireChatUnlock,
   asyncHandler(async (req: AuthRequest, res) => {
-    const conversation = await findActiveConversation();
+    const conversation = await findConversationFor(req.user!.id);
     if (!conversation) {
       res.json([]);
       return;
@@ -154,7 +185,7 @@ chatRouter.get(
       where: { conversationId: conversation.id, destination, deletedAt: null },
       orderBy: { createdAt: 'asc' },
       take: 500,
-      include: { sender: { select: { username: true, role: true } } }
+      include: { sender: { select: { username: true, role: true, displayName: true } } }
     });
     res.json(rows);
   })
@@ -177,8 +208,8 @@ chatRouter.post(
 
     if (destination === MessageDestination.GAME) {
       const message = await prisma.gameMessage.create({
-        data: { senderId: req.user!.id, content: parsed.data.content },
-        include: { sender: { select: { username: true, role: true } } }
+        data: { senderId: req.user!.id, recipientId: other.id, content: parsed.data.content },
+        include: { sender: { select: { username: true, role: true, displayName: true } } }
       });
       for (const id of [req.user!.id, other.id]) emitToUser(id, 'game:message:new', message);
       await notifyUser({
@@ -194,7 +225,7 @@ chatRouter.post(
       return;
     }
 
-    const conversation = await getConversationForNewMessage().catch((error) => {
+    const conversation = await getConversationForNewMessage(req.user!.id).catch((error) => {
       if ((error as Error & { code?: string }).code === 'CONVERSATION_ARCHIVED') {
         throw new HttpError(409, 'Conversation is archived. Use RESTORE to reopen it.');
       }
@@ -207,7 +238,7 @@ chatRouter.post(
         content: parsed.data.content,
         destination: MessageDestination.CHAT
       },
-      include: { sender: { select: { username: true, role: true } } }
+      include: { sender: { select: { username: true, role: true, displayName: true } } }
     });
     for (const id of [req.user!.id, other.id]) emitToUser(id, 'message:new', message);
     await notifyUser({
@@ -275,9 +306,12 @@ chatRouter.delete(
       ]);
     }
 
-    const other = await otherUser(req.user!.id);
-    for (const id of [req.user!.id, other.id]) {
-      emitToUser(id, 'chat:deleted', { permanently: true });
+    const recipients = await prisma.user.findMany({
+      where: { id: { not: req.user!.id } },
+      select: { id: true }
+    });
+    for (const recipient of recipients) {
+      emitToUser(recipient.id, 'chat:deleted', { permanently: true });
     }
     res.status(204).end();
   })
@@ -341,7 +375,10 @@ chatRouter.post(
   '/archive',
   requireHost,
   asyncHandler(async (req: AuthRequest, res) => {
-    const conversation = await findActiveConversation();
+    const pair = await pairOrThrow(req.user!.id);
+    const conversation = await prisma.conversation.findUnique({
+      where: { hostId_guestId: { hostId: pair.host.id, guestId: pair.guest.id } }
+    });
     if (!conversation) throw new HttpError(404, 'There is no active conversation to archive.');
     await prisma.conversation.update({
       where: { id: conversation.id },
@@ -353,8 +390,7 @@ chatRouter.post(
       update: { archivedAt: new Date(), archivedBy: req.user!.id }
     });
     await audit(req.user!.id, 'ARCHIVE_CONVERSATION', conversation.id);
-    const other = await otherUser(req.user!.id);
-    for (const id of [req.user!.id, other.id]) {
+    for (const id of [req.user!.id, pair.guest.id, pair.host.id]) {
       emitToUser(id, 'chat:state', { status: ConversationStatus.ARCHIVED });
     }
     res.json({ ok: true });
@@ -368,8 +404,9 @@ chatRouter.post(
     const command = String(req.body?.command ?? '').trim().toUpperCase();
     if (command !== 'RESTORE') throw new HttpError(400, 'Enter RESTORE');
 
-    const conversation = await findRestorableConversation();
-    if (!conversation) {
+    const pair = await pairOrThrow(req.user!.id);
+    const conversation = await findRestorableConversation(pair.host.id, pair.guest.id);
+    if (!conversation || conversation.status === ConversationStatus.DELETED) {
       await prisma.restoreEvent.create({
         data: { userId: req.user!.id, result: 'UNAVAILABLE' }
       });
@@ -429,9 +466,16 @@ chatRouter.post(
 chatRouter.get(
   '/inbox',
   asyncHandler(async (req: AuthRequest, res) => {
+    const peer = await otherUser(req.user!.id);
     const rows = await prisma.gameMessage.findMany({
+      where: {
+        OR: [
+          { senderId: req.user!.id, recipientId: peer.id },
+          { senderId: peer.id, recipientId: req.user!.id }
+        ]
+      },
       orderBy: { createdAt: 'asc' },
-      include: { sender: { select: { username: true, role: true } } },
+      include: { sender: { select: { username: true, role: true, displayName: true } } },
       take: 500
     });
     res.json(rows);
@@ -442,7 +486,7 @@ chatRouter.post(
   '/inbox/read',
   asyncHandler(async (req: AuthRequest, res) => {
     await prisma.gameMessage.updateMany({
-      where: { readAt: null, senderId: { not: req.user!.id } },
+      where: { recipientId: req.user!.id, readAt: null, senderId: { not: req.user!.id } },
       data: { readAt: new Date() }
     });
     res.json({ ok: true });
@@ -453,7 +497,11 @@ chatRouter.post(
   '/inbox/:id/read',
   asyncHandler(async (req: AuthRequest, res) => {
     await prisma.gameMessage.updateMany({
-      where: { id: req.params.id, senderId: { not: req.user!.id } },
+      where: {
+        id: req.params.id,
+        recipientId: req.user!.id,
+        senderId: { not: req.user!.id }
+      },
       data: { readAt: new Date() }
     });
     res.json({ ok: true });
@@ -546,6 +594,12 @@ chatRouter.get(
   '/permissions',
   asyncHandler(async (req: AuthRequest, res) => {
     const rows = await prisma.permission.findMany({
+      where: {
+        OR: [
+          { requestedBy: req.user!.id },
+          { grantedBy: req.user!.id }
+        ]
+      },
       include: {
         requester: { select: { username: true, role: true } },
         grantor: { select: { username: true, role: true } }
@@ -714,7 +768,7 @@ chatRouter.get(
     res.json({
       enabled: Boolean(code),
       updatedAt: code?.updatedAt ?? null,
-      rateLimit: { attempts: 8, windowMinutes: 15 }
+      rateLimit: { attempts: 1000, windowSeconds: 30 }
     });
   })
 );
@@ -804,9 +858,12 @@ chatRouter.delete(
     await audit(req.user!.id, 'DELETE_ALL_GAME_MESSAGES', undefined, {
       count: result.count
     });
-    const other = await otherUser(req.user!.id);
-    for (const id of [req.user!.id, other.id]) {
-      emitToUser(id, 'game:messages:cleared', { count: result.count });
+    const recipients = await prisma.user.findMany({
+      where: { id: { not: req.user!.id } },
+      select: { id: true }
+    });
+    for (const recipient of recipients) {
+      emitToUser(recipient.id, 'game:messages:cleared', { count: result.count });
     }
     res.json({ ok: true, count: result.count });
   })

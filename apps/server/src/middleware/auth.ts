@@ -8,6 +8,7 @@ export type AuthUser = {
   id: string;
   role: Role;
   username: string;
+  displayName: string | null;
   chatUnlocked: boolean;
 };
 
@@ -32,6 +33,7 @@ export async function resolveSession(token?: string): Promise<AuthUser | null> {
     id: session.user.id,
     role: session.user.role,
     username: session.user.username,
+    displayName: session.user.displayName,
     chatUnlocked: session.user.chatUnlocked || session.user.role === Role.HOST
   };
 }
@@ -61,12 +63,14 @@ export async function isOtherUser(userId: string) {
 export function clientSafeUser(user: {
   id: string;
   username: string;
+  displayName?: string | null;
   role: Role;
   chatUnlocked: boolean;
 }): AuthUser {
   return {
     id: user.id,
     username: user.username,
+    displayName: user.displayName ?? null,
     role: user.role,
     chatUnlocked: user.chatUnlocked || user.role === Role.HOST
   };

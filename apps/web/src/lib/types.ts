@@ -3,8 +3,19 @@ export type Role = 'HOST' | 'GUEST';
 export type User = {
   id: string;
   username: string;
+  displayName?: string | null;
   role: Role;
   chatUnlocked: boolean;
+};
+
+export type Contact = {
+  id: string;
+  username: string;
+  displayName?: string | null;
+  role: Role;
+  online: boolean;
+  unread: number;
+  lastMessageAt?: string | null;
 };
 
 export type Screen =
@@ -29,7 +40,7 @@ export type Message = {
   readAt?: string | null;
   deliveredAt?: string | null;
   destination: MessageDestination;
-  sender?: { username: string; role: Role };
+  sender?: { username: string; role: Role; displayName?: string | null };
 };
 
 export type GameMessage = Message;
@@ -89,12 +100,14 @@ export type ConversationStatus = 'ACTIVE' | 'ARCHIVED' | 'DELETED' | 'NONE';
 export type Summary = {
   status: ConversationStatus;
   conversationId: string | null;
+  peerId?: string | null;
   unreadMessages: number;
   unreadGameMessages: number;
   unreadNotifications: number;
   chatVisible: boolean;
   chatUnlocked: boolean;
   onlineUserIds: string[];
+  contacts?: Contact[];
   activeCall: CallRecord | null;
 };
 

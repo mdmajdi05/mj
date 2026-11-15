@@ -14,6 +14,7 @@ import { API, api, ApiError } from '@/lib/api';
 import type {
   AdminActivity,
   CallState,
+  Contact,
   ConversationStatus,
   GameMessage,
   IncomingCall,
@@ -57,6 +58,9 @@ export function useDuoApp() {
   const [gameMessages, setGameMessages] = useState<GameMessage[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [permissions, setPermissions] = useState<Permission[]>([]);
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [activePeerId, setActivePeerId] = useState('');
+  const [authOpen, setAuthOpen] = useState(false);
   const [unread, setUnread] = useState(0);
   const [inboxUnread, setInboxUnread] = useState(0);
   const [activityUnread, setActivityUnread] = useState(0);
@@ -84,6 +88,7 @@ export function useDuoApp() {
   const userRef = useRef<User | null>(null);
   const screenRef = useRef<Screen>('HOME');
   const prefsRef = useRef<Preferences>(defaultPreferences);
+  const activePeerRef = useRef('');
   const butterflyIds = useRef(new Set<string>());
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -108,6 +113,7 @@ export function useDuoApp() {
   userRef.current = user;
   screenRef.current = screen;
   prefsRef.current = prefs;
+  activePeerRef.current = activePeerId;
   callStateRef.current = callState;
   callHiddenRef.current = callHidden;
 
@@ -170,7 +176,6 @@ export function useDuoApp() {
   }, []);
 
   const applyPrivateOutput = useCallback(async () => {
-    if (userRef.current?.role !== 'GUEST') return;
     const audio = remoteAudioRef.current as
       | (HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> })
       | null;
@@ -300,6 +305,12 @@ export function useDuoApp() {
     );
   }, []);
 
+  const loadContacts = useCallback(async () => {
+    const rows = await api<Contact[]>('/chat/contacts');
+    setContacts(rows);
+    return rows;
+  }, []);
+
   const loadSummary = useCallback(async () => {
     const summary = await api<Summary>('/chat/summary');
     const current = userRef.current;
@@ -307,8 +318,15 @@ export function useDuoApp() {
     setUnread(summary.unreadMessages);
     setInboxUnread(summary.unreadGameMessages);
     setActivityUnread(summary.unreadNotifications);
+    if (summary.contacts) setContacts(summary.contacts);
+    if (summary.peerId !== undefined) setActivePeerId(summary.peerId ?? '');
     if (current) {
-      setOtherOnline(summary.onlineUserIds.some((id) => id !== current.id));
+      const peerId = summary.peerId;
+      setOtherOnline(
+        peerId
+          ? summary.onlineUserIds.includes(peerId)
+          : summary.onlineUserIds.some((id) => id !== current.id)
+      );
     }
     return summary;
   }, []);
@@ -323,10 +341,41 @@ export function useDuoApp() {
     ]);
   }, [loadMessages, loadInbox, loadPermissions, loadNotifications, loadSummary]);
 
+  const openAuth = useCallback(() => {
+    setAuthOpen(true);
+  }, []);
+
+  const closeAuth = useCallback(() => {
+    setAuthOpen(false);
+  }, []);
+
+  const selectPeer = useCallback(
+    async (peerId: string) => {
+      await api('/chat/peer', {
+        method: 'POST',
+        body: JSON.stringify({ peerId })
+      });
+      setActivePeerId(peerId);
+      setMessages([]);
+      setUnread(0);
+      await Promise.allSettled([
+        loadSummary(),
+        loadMessages(),
+        loadInbox(),
+        loadContacts()
+      ]);
+    },
+    [loadContacts, loadInbox, loadMessages, loadSummary]
+  );
+
   const navigate = useCallback(
     (next: Screen) => {
       const current = userRef.current;
-      if (!current) return;
+      if (!current) {
+        setAuthOpen(true);
+        setMenuOpen(false);
+        return;
+      }
       // The ONLY way into private Chat is a fresh promo-code check in this
       // browser session. Every other link is redirected to the code screen.
       if (next === 'CHAT' && !chatUnlockedRef.current) {
@@ -372,14 +421,33 @@ export function useDuoApp() {
     [loadNotifications, setScreen, showError]
   );
 
-  const loginGuest = useCallback(
-    async (name: string) => {
-      const account = await api<User>('/auth/guest', {
+  const loginAccount = useCallback(
+    async (username: string, password: string) => {
+      const account = await api<User>('/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ name })
+        body: JSON.stringify({ username, password })
       });
       setUser(account);
       userRef.current = account;
+      setAuthOpen(false);
+      setScreen('HOME');
+      void api('/chat/screen', {
+        method: 'POST',
+        body: JSON.stringify({ screen: 'HOME' })
+      }).catch(() => undefined);
+    },
+    [setScreen]
+  );
+
+  const signupAccount = useCallback(
+    async (name: string, username: string, password: string) => {
+      const account = await api<User>('/auth/signup', {
+        method: 'POST',
+        body: JSON.stringify({ name, username, password })
+      });
+      setUser(account);
+      userRef.current = account;
+      setAuthOpen(false);
       setScreen('HOME');
       void api('/chat/screen', {
         method: 'POST',
@@ -420,6 +488,9 @@ export function useDuoApp() {
     setGameMessages([]);
     setNotifications([]);
     setPermissions([]);
+    setContacts([]);
+    setActivePeerId('');
+    setAuthOpen(false);
     setIncomingCall(null);
     setCallState('IDLE');
     setCallId('');
@@ -550,7 +621,13 @@ export function useDuoApp() {
         setUnread(0);
         setInboxUnread(summary.unreadGameMessages);
         setActivityUnread(summary.unreadNotifications);
-        setOtherOnline(summary.onlineUserIds.some((id) => id !== user.id));
+        if (summary.contacts) setContacts(summary.contacts);
+        if (summary.peerId !== undefined) setActivePeerId(summary.peerId ?? '');
+        setOtherOnline(
+          summary.peerId
+            ? summary.onlineUserIds.includes(summary.peerId)
+            : summary.onlineUserIds.some((id) => id !== user.id)
+        );
       } catch {
         // A missing summary is not fatal; the app still starts on HOME.
         if (alive) setScreen('HOME');
@@ -871,6 +948,14 @@ export function useDuoApp() {
     setLocalMic(!micOn);
   }, [micOn, setLocalMic]);
 
+  /** Guest's Done button: mute both microphones through the backend. */
+  const guestDone = useCallback(() => {
+    if (callIdRef.current) {
+      socketRef.current?.emit('call:remote-mic', { enabled: false });
+    }
+    setLocalMic(false);
+  }, [setLocalMic]);
+
   const hideCall = useCallback(() => {
     setCallHidden(true);
     setCallMuted(true);
@@ -1001,13 +1086,25 @@ export function useDuoApp() {
       // Never keep private message content in memory unless Chat was opened
       // with a valid promo code in this session.
       if (!chatUnlockedRef.current) return;
-      setMessages((current) =>
-        current.some((item) => item.id === message.id) ? current : [...current, message]
-      );
       const current = userRef.current;
+      if (
+        current?.role === 'HOST' &&
+        activePeerRef.current &&
+        message.senderId !== current.id &&
+        message.senderId !== activePeerRef.current
+      ) {
+        void loadContacts().catch(() => undefined);
+        return;
+      }
+      setMessages((currentMessages) =>
+        currentMessages.some((item) => item.id === message.id)
+          ? currentMessages
+          : [...currentMessages, message]
+      );
       if (current && message.senderId !== current.id && screenRef.current !== 'CHAT') {
         setUnread((value) => value + 1);
       }
+      void loadContacts().catch(() => undefined);
     });
 
     socket.on('message:delivered', (payload: { id: string }) => {
@@ -1033,10 +1130,21 @@ export function useDuoApp() {
     });
 
     socket.on('game:message:new', (message: GameMessage) => {
-      setGameMessages((current) =>
-        current.some((item) => item.id === message.id) ? current : [...current, message]
-      );
       const current = userRef.current;
+      if (
+        current?.role === 'HOST' &&
+        activePeerRef.current &&
+        message.senderId !== current.id &&
+        message.senderId !== activePeerRef.current
+      ) {
+        void loadInbox().catch(() => undefined);
+        return;
+      }
+      setGameMessages((currentMessages) =>
+        currentMessages.some((item) => item.id === message.id)
+          ? currentMessages
+          : [...currentMessages, message]
+      );
       if (current && message.senderId !== current.id) {
         if (screenRef.current === 'INBOX') {
           void api(`/chat/inbox/${message.id}/read`, { method: 'POST' }).catch(() => undefined);
@@ -1069,14 +1177,24 @@ export function useDuoApp() {
 
     socket.on('presence:list', (payload: { onlineUserIds: string[] }) => {
       const current = userRef.current;
+      const peerId = activePeerRef.current;
       setOtherOnline(
-        payload.onlineUserIds.some((id) => (current ? id !== current.id : true))
+        peerId
+          ? payload.onlineUserIds.includes(peerId)
+          : payload.onlineUserIds.some((id) => (current ? id !== current.id : true))
       );
+      void loadContacts().catch(() => undefined);
     });
 
     socket.on('presence:update', (payload: { userId: string; online: boolean }) => {
       const current = userRef.current;
-      if (current && payload.userId !== current.id) setOtherOnline(payload.online);
+      const peerId = activePeerRef.current;
+      if (peerId) {
+        if (payload.userId === peerId) setOtherOnline(payload.online);
+      } else if (current && payload.userId !== current.id) {
+        setOtherOnline(payload.online);
+      }
+      void loadContacts().catch(() => undefined);
     });
 
     socket.on('permission:new', () => {
@@ -1197,6 +1315,7 @@ export function useDuoApp() {
     addButterfly,
     closeLocalCall,
     handleSignal,
+    loadContacts,
     loadMessages,
     loadNotifications,
     loadPermissions,
@@ -1350,6 +1469,10 @@ export function useDuoApp() {
 
   const startGame = useCallback(
     (slug: string) => {
+      if (!userRef.current) {
+        setAuthOpen(true);
+        return;
+      }
       setActiveGame(slug);
       setScreen('GAME');
       setMenuOpen(false);
@@ -1449,6 +1572,13 @@ export function useDuoApp() {
     inboxUnread,
     activityUnread,
     totalNotifications,
+    contacts,
+    activePeerId,
+    authOpen,
+    openAuth,
+    closeAuth,
+    selectPeer,
+    loadContacts,
     otherOnline,
     butterflies,
     prefs,
@@ -1470,7 +1600,8 @@ export function useDuoApp() {
     remoteAudioRef,
     setScreen,
     navigate,
-    loginGuest,
+    loginAccount,
+    signupAccount,
     loginHost,
     logout,
     updatePreference,
@@ -1480,6 +1611,7 @@ export function useDuoApp() {
     acceptCall,
     declineIncoming,
     hangup,
+    guestDone,
     closePrivateChat,
     toggleMic,
     hideCall,

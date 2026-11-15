@@ -2,26 +2,34 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { ArrowRight, Gamepad2, GraduationCap } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Gamepad2, GraduationCap, LogIn, UserPlus } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
 import { Button, Field } from '@/components/ui';
 
+type Mode = 'login' | 'signup';
+
 export function LoginScreen() {
-  const { loginGuest } = useDuo();
+  const duo = useDuo();
+  const [mode, setMode] = useState<Mode>('login');
   const [name, setName] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [loginError, setLoginError] = useState('');
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!name.trim()) return;
     setBusy(true);
     setLoginError('');
     try {
-      await loginGuest(name.trim());
-      setName('');
+      if (mode === 'login') {
+        await duo.loginAccount(username.trim(), password);
+      } else {
+        await duo.signupAccount(name.trim(), username.trim(), password);
+      }
+      setPassword('');
     } catch (cause) {
-      setLoginError(cause instanceof Error ? cause.message : 'Could not start');
+      setLoginError(cause instanceof Error ? cause.message : 'Could not continue');
     } finally {
       setBusy(false);
     }
@@ -50,7 +58,7 @@ export function LoginScreen() {
             {[
               ['Study Assistant', 'Ask questions and revise at your own pace.'],
               ['Game arcade', 'Racing, puzzles, bubbles, snake and more.'],
-              ['Focus mode', 'A quiet layout with nothing extra in the way.']
+              ['Your own space', 'Every account keeps its own progress.']
             ].map(([title, description]) => (
               <div className="panel-soft p-4" key={title}>
                 <p className="text-sm font-semibold">{title}</p>
@@ -61,7 +69,15 @@ export function LoginScreen() {
         </section>
 
         <form onSubmit={submit} className="panel login-card w-full p-7 md:p-9">
-          <div className="mb-7 text-center">
+          <button
+            type="button"
+            onClick={duo.closeAuth}
+            className="muted mb-4 inline-flex items-center gap-1 text-xs hover:text-white"
+          >
+            <ArrowLeft size={14} /> Back to games
+          </button>
+
+          <div className="mb-6 text-center">
             <div className="logo-mark mx-auto">
               <svg viewBox="0 0 64 56" className="h-9 w-9" aria-hidden="true">
                 <defs>
@@ -79,19 +95,71 @@ export function LoginScreen() {
               </svg>
             </div>
             <h2 className="mt-4 text-2xl font-semibold tracking-tight">Study with Game</h2>
-            <p className="muted mt-1 text-sm">Enter your name to continue</p>
+            <p className="muted mt-1 text-sm">
+              {mode === 'login' ? 'Log in to continue' : 'Create your account'}
+            </p>
           </div>
 
-          <Field
-            label="Your name"
-            type="text"
-            autoComplete="nickname"
-            placeholder="Type your name"
-            maxLength={40}
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            required
-          />
+          <div className="mb-5 grid grid-cols-2 gap-2 rounded-xl border border-white/10 bg-black/20 p-1">
+            <button
+              type="button"
+              className={`rounded-lg px-3 py-2 text-sm font-medium transition ${
+                mode === 'login' ? 'bg-white/10 text-white' : 'muted'
+              }`}
+              onClick={() => {
+                setMode('login');
+                setLoginError('');
+              }}
+            >
+              <LogIn size={14} className="mr-1 inline" /> Log in
+            </button>
+            <button
+              type="button"
+              className={`rounded-lg px-3 py-2 text-sm font-medium transition ${
+                mode === 'signup' ? 'bg-white/10 text-white' : 'muted'
+              }`}
+              onClick={() => {
+                setMode('signup');
+                setLoginError('');
+              }}
+            >
+              <UserPlus size={14} className="mr-1 inline" /> Sign up
+            </button>
+          </div>
+
+          <div className="space-y-3">
+            {mode === 'signup' && (
+              <Field
+                label="Name"
+                type="text"
+                autoComplete="name"
+                placeholder="Your name"
+                maxLength={40}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                required
+              />
+            )}
+            <Field
+              label="Username"
+              type="text"
+              autoComplete="username"
+              placeholder="e.g. studybuddy"
+              maxLength={24}
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              required
+            />
+            <Field
+              label="Password"
+              type="password"
+              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+              placeholder="Any length you like"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              required
+            />
+          </div>
 
           {loginError && (
             <p className="mt-3 rounded-xl border border-rose-400/20 bg-rose-950/30 p-3 text-sm text-rose-200">
@@ -99,15 +167,30 @@ export function LoginScreen() {
             </p>
           )}
 
-          <Button variant="primary" className="mt-5 w-full" disabled={busy || !name.trim()}>
+          <Button
+            variant="primary"
+            className="mt-5 w-full"
+            disabled={busy || !username.trim() || !password || (mode === 'signup' && !name.trim())}
+          >
             <Gamepad2 size={17} />
-            {busy ? 'Opening…' : 'Start playing'}
+            {busy ? 'Please wait…' : mode === 'login' ? 'Log in' : 'Create account'}
           </Button>
 
           <div className="muted mt-5 flex items-center justify-center gap-2 text-center text-xs leading-5">
-            <span>No account needed.</span>
-            <Link href="/host" className="inline-flex items-center gap-1 text-sky-300 hover:text-sky-200">
-              Host access <ArrowRight size={12} />
+            <span>{mode === 'login' ? 'New here?' : 'Already have an account?'}</span>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 text-sky-300 hover:text-sky-200"
+              onClick={() => {
+                setMode(mode === 'login' ? 'signup' : 'login');
+                setLoginError('');
+              }}
+            >
+              {mode === 'login' ? 'Create one' : 'Log in'} <ArrowRight size={12} />
+            </button>
+            <span>·</span>
+            <Link href="/host" className="text-sky-300 hover:text-sky-200">
+              Host access
             </Link>
           </div>
         </form>

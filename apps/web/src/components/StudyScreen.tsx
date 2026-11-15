@@ -154,8 +154,12 @@ export function StudyScreen() {
                 {formatDuration(duo.callSeconds)} · {duo.micOn ? 'your mic is on' : 'your mic is muted'}
               </p>
             </div>
-            <Button variant="danger" className="study-button" onClick={duo.hangup}>
-              <PhoneOff size={17} /> DONE
+            <Button
+              variant={duo.user?.role === 'GUEST' ? 'primary' : 'danger'}
+              className="study-button"
+              onClick={duo.user?.role === 'GUEST' ? duo.guestDone : duo.hangup}
+            >
+              {duo.user?.role === 'GUEST' ? 'DONE' : <><PhoneOff size={17} /> End call</>}
             </Button>
           </div>
         )}

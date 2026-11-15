@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ChevronDown,
   Gamepad2,
+  LogIn,
   LogOut,
   Mic,
   MicOff,
@@ -11,7 +12,8 @@ import {
   PhoneOff,
   Settings,
   Shield,
-  Ticket
+  Ticket,
+  UserPlus
 } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
 import { formatDuration } from '@/lib/utils';
@@ -98,17 +100,51 @@ export function AppHeader() {
             aria-expanded={profileOpen}
             aria-label="Profile menu"
           >
-            <span className="avatar">{duo.user?.role === 'HOST' ? 'H' : 'G'}</span>
-            <span className="hidden text-sm sm:inline">{duo.user?.username}</span>
+            <span className="avatar">
+              {duo.user
+                ? (duo.user.displayName || duo.user.username).charAt(0).toUpperCase()
+                : '?'}
+            </span>
+            <span className="hidden text-sm sm:inline">
+              {duo.user ? duo.user.displayName || duo.user.username : 'Log in'}
+            </span>
             <ChevronDown size={14} />
           </button>
 
           {profileOpen && (
             <div className="panel dropdown-panel w-64 p-2">
+              {!duo.user ? (
+                <>
+                  <div className="px-3 py-2">
+                    <p className="text-sm font-semibold">Welcome</p>
+                    <p className="muted mt-0.5 text-xs">Log in or create an account to save progress and chat.</p>
+                  </div>
+                  <div className="my-1 h-px bg-white/10" />
+                  <MenuItem
+                    icon={<LogIn size={16} />}
+                    label="Log in"
+                    onClick={() => {
+                      setProfileOpen(false);
+                      duo.openAuth();
+                    }}
+                  />
+                  <MenuItem
+                    icon={<UserPlus size={16} />}
+                    label="Sign up"
+                    onClick={() => {
+                      setProfileOpen(false);
+                      duo.openAuth();
+                    }}
+                  />
+                </>
+              ) : (
+                <>
               <div className="px-3 py-2">
-                <p className="text-sm font-semibold">{duo.user?.username}</p>
+                <p className="text-sm font-semibold">
+                  {duo.user.displayName || duo.user.username}
+                </p>
                 <p className="muted mt-0.5 text-xs">
-                  {duo.user?.role === 'HOST' ? 'Host / Administrator' : 'Guest'}
+                  @{duo.user.username} · {duo.user.role === 'HOST' ? 'Host / Administrator' : 'Guest'}
                 </p>
                 <div className="mt-2 flex items-center gap-2">
                   <Badge tone="accent">Study + Games</Badge>
@@ -185,6 +221,8 @@ export function AppHeader() {
                 <LogOut size={16} />
                 Logout
               </button>
+                </>
+              )}
             </div>
           )}
         </div>

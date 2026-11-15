@@ -33,6 +33,7 @@ async function main() {
     host = await prisma.user.create({
       data: {
         username: 'host',
+        displayName: 'Host',
         role: Role.HOST,
         chatUnlocked: true,
         passwordHash: await bcrypt.hash(hostPassword, 12)
@@ -50,6 +51,7 @@ async function main() {
     guest = await prisma.user.create({
       data: {
         username: 'guest',
+        displayName: 'Guest',
         role: Role.GUEST,
         chatUnlocked: false,
         passwordHash: await bcrypt.hash(guestPassword, 12)

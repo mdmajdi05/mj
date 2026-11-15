@@ -2,11 +2,12 @@ import type { Server, Socket } from 'socket.io';
 import { prisma } from '../lib/prisma';
 import type { AuthUser } from '../middleware/auth';
 import { emitToUser, notifyUser } from '../services/notifier';
+import { peerFor } from '../services/peer';
 
 export function registerGameSocketHandlers(_io: Server, socket: Socket) {
   const user = socket.data.user as AuthUser;
 
-  const otherUser = () => prisma.user.findFirst({ where: { id: { not: user.id } } });
+  const otherUser = () => peerFor(user.id);
 
   socket.on('game:start', async (payload: { slug?: string }) => {
     if (typeof payload?.slug !== 'string') return;

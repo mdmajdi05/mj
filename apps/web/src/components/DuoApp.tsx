@@ -41,7 +41,8 @@ function DuoShell({ hostMode }: { hostMode: boolean }) {
 
   if (hostMode && (!duo.user || duo.user.role !== 'HOST')) return <HostLoginScreen />;
 
-  if (!duo.user) return <LoginScreen />;
+  // Visitors can browse the games. Any account action opens the auth screen.
+  if (!duo.user && duo.authOpen) return <LoginScreen />;
 
   return (
     <div className="shell">
@@ -59,7 +60,7 @@ function DuoShell({ hostMode }: { hostMode: boolean }) {
           {duo.screen === 'RESTORE' && <RestoreScreen />}
           {duo.screen === 'SETTINGS' && <SettingsScreen />}
           {duo.screen === 'ADMIN' &&
-            (duo.user.role === 'HOST' ? <AdminScreen /> : <HomeScreen />)}
+            (duo.user?.role === 'HOST' ? <AdminScreen /> : <HomeScreen />)}
         </main>
       </div>
 

@@ -9,9 +9,10 @@ import { prisma } from '../lib/prisma';
 import { writeAudit } from '../lib/audit';
 import type { AuthUser } from '../middleware/auth';
 import {
-  findRestorableConversation,
-  getConversationForNewMessage
+  getConversationForNewMessage,
+  findRestorableConversation
 } from '../services/conversations';
+import { pairFor, peerFor } from '../services/peer';
 import { emitToUser, notifyUser } from '../services/notifier';
 import { isOnline } from '../services/presence';
 
@@ -48,7 +49,7 @@ async function chatUnlocked(user: AuthUser) {
 }
 
 async function otherUser(userId: string) {
-  return prisma.user.findFirst({ where: { id: { not: userId } } });
+  return peerFor(userId);
 }
 
 export function registerChatSocketHandlers(io: Server, socket: Socket) {
@@ -77,7 +78,7 @@ export function registerChatSocketHandlers(io: Server, socket: Socket) {
 
     const other = await otherUser(user.id);
     if (!other) {
-      emitError('The second account is not configured.');
+      emitError('No chat partner is configured.');
       return;
     }
 
@@ -88,8 +89,8 @@ export function registerChatSocketHandlers(io: Server, socket: Socket) {
 
     if (destination === MessageDestination.GAME) {
       const message = await prisma.gameMessage.create({
-        data: { senderId: user.id, content },
-        include: { sender: { select: { username: true, role: true } } }
+        data: { senderId: user.id, recipientId: other.id, content },
+        include: { sender: { select: { username: true, role: true, displayName: true } } }
       });
       emitToUser(user.id, 'game:message:new', message);
       emitToUser(other.id, 'game:message:new', message);
@@ -107,7 +108,7 @@ export function registerChatSocketHandlers(io: Server, socket: Socket) {
 
     let conversation;
     try {
-      conversation = await getConversationForNewMessage();
+      conversation = await getConversationForNewMessage(user.id);
     } catch (error) {
       emitError(
         (error as Error & { code?: string }).code === 'CONVERSATION_ARCHIVED'
@@ -126,7 +127,7 @@ export function registerChatSocketHandlers(io: Server, socket: Socket) {
         destination: MessageDestination.CHAT,
         deliveredAt: delivered ? new Date() : null
       },
-      include: { sender: { select: { username: true, role: true } } }
+      include: { sender: { select: { username: true, role: true, displayName: true } } }
     });
 
     emitToUser(user.id, 'message:new', message);
@@ -191,8 +192,13 @@ export function registerChatSocketHandlers(io: Server, socket: Socket) {
       socket.emit('chat:state', { error: 'Host access only' });
       return;
     }
-    const conversation = await prisma.conversation.findFirst({
-      where: { status: ConversationStatus.ACTIVE }
+    const pair = await pairFor(user.id);
+    if (!pair) {
+      socket.emit('chat:state', { error: 'No active conversation to archive.' });
+      return;
+    }
+    const conversation = await prisma.conversation.findUnique({
+      where: { hostId_guestId: { hostId: pair.host.id, guestId: pair.guest.id } }
     });
     if (!conversation) {
       socket.emit('chat:state', { error: 'No active conversation to archive.' });
@@ -208,15 +214,17 @@ export function registerChatSocketHandlers(io: Server, socket: Socket) {
       update: { archivedAt: new Date(), archivedBy: user.id }
     });
     await writeAudit(user.id, 'ARCHIVE_CONVERSATION', conversation.id);
-    const other = await otherUser(user.id);
     const payload = { status: ConversationStatus.ARCHIVED };
     emitToUser(user.id, 'chat:state', payload);
-    if (other) emitToUser(other.id, 'chat:state', payload);
+    emitToUser(pair.guest.id, 'chat:state', payload);
   });
 
   socket.on('chat:restore', async () => {
-    const conversation = await findRestorableConversation();
-    if (!conversation) {
+    const pair = await pairFor(user.id);
+    const conversation = pair
+      ? await findRestorableConversation(pair.host.id, pair.guest.id)
+      : null;
+    if (!conversation || conversation.status === ConversationStatus.DELETED) {
       socket.emit('chat:restore:failed', {
         error: 'Previous conversation is no longer available.'
       });
@@ -261,9 +269,12 @@ export function registerChatSocketHandlers(io: Server, socket: Socket) {
         })
       ]);
     }
-    const other = await otherUser(user.id);
+    const others = await prisma.user.findMany({
+      where: { id: { not: user.id } },
+      select: { id: true }
+    });
     emitToUser(user.id, 'chat:deleted', { permanently: true });
-    if (other) emitToUser(other.id, 'chat:deleted', { permanently: true });
+    for (const other of others) emitToUser(other.id, 'chat:deleted', { permanently: true });
   });
 
   socket.on('screen:set', async (payload: { screen?: string }) => {
@@ -287,7 +298,7 @@ export function registerPermissionSocketHandlers(io: Server, socket: Socket) {
       where: { requestedBy: user.id, status: PermissionStatus.REQUESTED }
     });
     if (!pending) return;
-    const host = await prisma.user.findFirst({ where: { role: Role.HOST } });
+    const host = await peerFor(user.id);
     if (!host) return;
     await notifyUser({
       userId: host.id,

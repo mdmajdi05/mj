@@ -35,6 +35,7 @@ enum CallStatus {
 model User {
   id                 String            @id @default(cuid())
   username           String            @unique
+  displayName        String?
   role               Role
   passwordHash       String
   chatUnlocked       Boolean           @default(false)
@@ -62,9 +63,12 @@ model Session {
 model Conversation {
   id        String             @id @default(cuid())
   status    ConversationStatus @default(ACTIVE)
+  hostId    String?
+  guestId   String?
   createdAt DateTime           @default(now())
   updatedAt DateTime           @updatedAt
   messages  Message[]
+  @@unique([hostId, guestId])
   @@index([status, updatedAt])
 }
 model Message {
@@ -101,13 +105,15 @@ model GameSession {
   @@index([userId, startedAt])
 }
 model GameMessage {
-  id        String   @id @default(cuid())
-  senderId  String
-  sender    User     @relation(fields: [senderId], references: [id])
-  content   String
-  createdAt DateTime @default(now())
-  readAt    DateTime?
+  id          String   @id @default(cuid())
+  senderId    String
+  sender      User     @relation(fields: [senderId], references: [id])
+  recipientId String?
+  content     String
+  createdAt   DateTime @default(now())
+  readAt      DateTime?
   @@index([createdAt])
+  @@index([recipientId, readAt])
 }
 model Notification {
   id        String   @id @default(cuid())
@@ -134,6 +140,7 @@ model UserPreference {
   userId         String  @unique
   reducedMotion  Boolean @default(false)
   theme          String  @default("dark")
+  activePeerId   String?
 }
 model AccessCode {
   id        String   @id @default(cuid())

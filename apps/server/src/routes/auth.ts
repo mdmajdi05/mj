@@ -26,12 +26,19 @@ const passwordLimit = rateLimit({
 });
 
 const loginSchema = z.object({
-  username: z.enum(['host', 'guest']),
-  password: z.string().min(1).max(200)
+  username: z.string().trim().min(1).max(64),
+  password: z.string().min(1)
 });
 
-const guestNameSchema = z.object({
-  name: z.string().trim().min(1, 'Enter your name').max(40, 'Name is too long')
+const signupSchema = z.object({
+  name: z.string().trim().min(1, 'Enter your name').max(40, 'Name is too long'),
+  username: z
+    .string()
+    .trim()
+    .min(3, 'Username must be at least 3 characters')
+    .max(24, 'Username is too long')
+    .regex(/^[a-zA-Z0-9._-]+$/, 'Use letters, numbers, dot, dash or underscore only'),
+  password: z.string().min(1, 'Enter a password')
 });
 
 const hostPasswordSchema = z.object({
@@ -77,9 +84,11 @@ authRouter.post(
       return;
     }
 
-    const user = await prisma.user.findUnique({ where: { username: parsed.data.username } });
+    const user = await prisma.user.findFirst({
+      where: { username: { equals: parsed.data.username, mode: 'insensitive' } }
+    });
     if (!user || !(await bcrypt.compare(parsed.data.password, user.passwordHash))) {
-      res.status(401).json({ error: 'Invalid credentials' });
+      res.status(401).json({ error: 'Invalid username or password' });
       return;
     }
 
@@ -90,47 +99,37 @@ authRouter.post(
 );
 
 authRouter.post(
-  '/guest',
+  '/signup',
   loginLimit,
   asyncHandler(async (req, res) => {
-    const parsed = guestNameSchema.safeParse(req.body);
+    const parsed = signupSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ error: parsed.error.issues[0]?.message || 'Enter your name' });
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid account details' });
       return;
     }
 
-    const name = parsed.data.name;
-    if (name.toLowerCase() === 'host') {
-      res.status(400).json({ error: 'Choose a different name.' });
+    const { name, username, password } = parsed.data;
+    if (username.toLowerCase() === 'host') {
+      res.status(409).json({ error: 'That username is not available.' });
       return;
     }
 
-    let guest = await prisma.user.findFirst({
-      where: { role: Role.GUEST },
-      orderBy: { createdAt: 'asc' }
+    const existing = await prisma.user.findFirst({
+      where: { username: { equals: username, mode: 'insensitive' } }
     });
-
-    if (!guest) {
-      guest = await prisma.user.create({
-        data: {
-          username: name,
-          role: Role.GUEST,
-          passwordHash: await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 12)
-        }
-      });
-    } else {
-      const conflict = await prisma.user.findUnique({ where: { username: name } });
-      if (conflict && conflict.id !== guest.id) {
-        res.status(409).json({ error: 'That name is already in use.' });
-        return;
-      }
-      if (guest.username !== name) {
-        guest = await prisma.user.update({
-          where: { id: guest.id },
-          data: { username: name }
-        });
-      }
+    if (existing) {
+      res.status(409).json({ error: 'That username is already taken.' });
+      return;
     }
+
+    const guest = await prisma.user.create({
+      data: {
+        username,
+        displayName: name,
+        role: Role.GUEST,
+        passwordHash: await bcrypt.hash(password, 12)
+      }
+    });
 
     await prisma.notificationPreference
       .createMany({ data: [{ userId: guest.id }], skipDuplicates: true })
@@ -147,7 +146,7 @@ authRouter.post(
 
     const token = await issueSession(guest.id);
     res.cookie('duo_session', token, cookieOptions());
-    res.json(clientSafeUser(guest));
+    res.status(201).json(clientSafeUser(guest));
   })
 );
 

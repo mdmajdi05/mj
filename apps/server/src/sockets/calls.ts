@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma';
 import { writeAudit } from '../lib/audit';
 import type { AuthUser } from '../middleware/auth';
 import { emitToUser, notifyUser } from '../services/notifier';
+import { peerFor } from '../services/peer';
 
 type SignalPayload = { callId?: string; kind?: string; signal?: unknown };
 
@@ -53,7 +54,7 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
 
   const emitError = (message: string) => socket.emit('call:error', { error: message });
 
-  const otherUser = () => prisma.user.findFirst({ where: { id: { not: user.id } } });
+  const otherUser = () => peerFor(user.id);
 
   const callFor = async (callId?: string) => {
     if (!callId) return null;
@@ -372,16 +373,15 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
       }
     });
     const enabled = Boolean(payload?.enabled);
+    // A Guest may always mute the Host microphone (the Done button sends this
+    // request through the backend). Unmuting still needs the Host's consent.
+    const guestMute = user.role === Role.GUEST && enabled === false;
     const permitted = user.role === Role.HOST
       ? Boolean(permission)
-      : Boolean(permission) && enabled === false;
+      : guestMute || Boolean(permission);
 
     if (!permitted) {
-      emitError(
-        user.role === Role.GUEST
-          ? 'The Host must grant permission before you can mute their microphone.'
-          : 'The Guest has not granted remote microphone control.'
-      );
+      emitError('The other participant has not granted microphone control.');
       return;
     }
 

@@ -6,9 +6,11 @@ import {
   BookOpen,
   Check,
   CheckCheck,
+  ChevronDown,
   Eye,
   MessageCircle,
   MoreVertical,
+  PhoneOff,
   Send,
   Trash2,
   X
@@ -29,6 +31,7 @@ export function ChatScreen() {
   const [draft, setDraft] = useState('');
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [peopleOpen, setPeopleOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -38,14 +41,24 @@ export function ChatScreen() {
     [duo.messages]
   );
 
+  const activeContact = useMemo(
+    () => duo.contacts.find((contact) => contact.id === duo.activePeerId),
+    [duo.contacts, duo.activePeerId]
+  );
+
   const otherName = useMemo(() => {
-    const fromMessage = chatMessages.find((message) => message.senderId !== duo.user?.id)?.sender
-      ?.username;
-    if (fromMessage) return fromMessage;
+    if (activeContact) return activeContact.displayName || activeContact.username;
+    const fromMessage = chatMessages.find((message) => message.senderId !== duo.user?.id)?.sender;
+    if (fromMessage) return fromMessage.displayName || fromMessage.username;
     return duo.user?.role === 'HOST' ? 'Guest' : 'Host';
-  }, [chatMessages, duo.user?.id, duo.user?.role]);
+  }, [activeContact, chatMessages, duo.user?.id, duo.user?.role]);
 
   const otherInitial = otherName.charAt(0).toUpperCase();
+
+  const callActive =
+    duo.callState === 'ACTIVE' ||
+    duo.callState === 'CONNECTING' ||
+    duo.callState === 'RECONNECTING';
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -77,19 +90,67 @@ export function ChatScreen() {
   return (
     <div className="chat-shell">
       <div className="chat-head">
-        <div className="chat-person">
-          <span className="chat-avatar">{otherInitial}</span>
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold">{otherName}</p>
-            <p className="muted flex items-center gap-1.5 text-[11px]">
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  duo.otherOnline ? 'bg-emerald-400' : 'bg-slate-500'
-                }`}
-              />
-              {duo.otherOnline ? 'online' : 'offline'}
-            </p>
-          </div>
+        <div className="relative">
+          <button
+            type="button"
+            className="chat-person"
+            onClick={() => {
+              if (duo.user?.role === 'HOST') setPeopleOpen((value) => !value);
+            }}
+            aria-label={duo.user?.role === 'HOST' ? 'Switch conversation' : otherName}
+          >
+            <span className="chat-avatar">{otherInitial}</span>
+            <div className="min-w-0 text-left">
+              <p className="flex items-center gap-1 truncate text-sm font-semibold">
+                {otherName}
+                {duo.user?.role === 'HOST' && <ChevronDown size={13} />}
+              </p>
+              <p className="muted flex items-center gap-1.5 text-[11px]">
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    duo.otherOnline ? 'bg-emerald-400' : 'bg-slate-500'
+                  }`}
+                />
+                {duo.otherOnline ? 'online' : 'offline'}
+              </p>
+            </div>
+          </button>
+
+          {peopleOpen && duo.user?.role === 'HOST' && (
+            <div className="panel dropdown-panel left-0 top-full mt-2 w-64 p-2">
+              <p className="muted px-3 py-1 text-[11px] uppercase tracking-wide">Conversations</p>
+              {duo.contacts.map((contact) => (
+                <button
+                  key={contact.id}
+                  type="button"
+                  className={`nav-item flex w-full items-center gap-2 text-left ${
+                    contact.id === duo.activePeerId ? 'bg-white/10' : ''
+                  }`}
+                  onClick={() => {
+                    setPeopleOpen(false);
+                    void duo.selectPeer(contact.id);
+                  }}
+                >
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full ${
+                      contact.online ? 'bg-emerald-400' : 'bg-slate-500'
+                    }`}
+                  />
+                  <span className="min-w-0 flex-1 truncate">
+                    {contact.displayName || contact.username}
+                  </span>
+                  {contact.unread > 0 && (
+                    <span className="rounded-full bg-pink-500 px-1.5 text-[10px]">
+                      {contact.unread}
+                    </span>
+                  )}
+                </button>
+              ))}
+              {!duo.contacts.length && (
+                <p className="muted px-3 py-2 text-xs">No accounts yet.</p>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -224,13 +285,35 @@ export function ChatScreen() {
           <div ref={bottomRef} />
         </div>
 
+        {callActive && (
+          <div className="chat-study-cta study-done-bar">
+            <div className="min-w-0">
+              <p className="flex items-center gap-1.5 text-sm font-medium">
+                <PhoneOff size={15} className="text-emerald-300" /> Call connected
+              </p>
+              <p className="muted text-[11px] leading-5">
+                {duo.micOn ? 'Your mic is on' : 'Your mic is muted'} · chat stays open
+              </p>
+            </div>
+            {duo.user?.role === 'GUEST' ? (
+              <Button variant="primary" className="study-button" onClick={duo.guestDone}>
+                DONE
+              </Button>
+            ) : (
+              <Button variant="danger" className="study-button" onClick={duo.hangup}>
+                <PhoneOff size={17} /> End call
+              </Button>
+            )}
+          </div>
+        )}
+
         <div className="chat-study-cta">
           <div className="min-w-0">
             <p className="flex items-center gap-1.5 text-sm font-medium">
               <BookOpen size={15} /> Study Mode
             </p>
             <p className="muted text-[11px] leading-5">
-              Chat hides instantly. The call stays connected.
+              Open the Study Assistant while the call stays connected.
             </p>
           </div>
           <Button

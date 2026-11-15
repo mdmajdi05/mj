@@ -498,8 +498,8 @@ export function AdminScreen() {
                 label="Rate limit"
                 value={
                   promoStatus?.rateLimit
-                    ? `${promoStatus.rateLimit.attempts} attempts / ${promoStatus.rateLimit.windowMinutes} min`
-                    : '8 attempts / 15 min'
+                    ? `${promoStatus.rateLimit.attempts} wrong attempts / ${promoStatus.rateLimit.windowSeconds} sec`
+                    : '10 wrong attempts / 30 sec'
                 }
               />
               <Row label="Storage" value="bcrypt hash only" />

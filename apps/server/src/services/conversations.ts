@@ -1,64 +1,67 @@
-import { ConversationStatus, MessageDestination, type Conversation } from '@prisma/client';
+import {
+  ConversationStatus,
+  MessageDestination,
+  type Conversation
+} from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { pairFor } from './peer';
 
-export async function findActiveConversation(): Promise<Conversation | null> {
-  return prisma.conversation.findFirst({
-    where: { status: ConversationStatus.ACTIVE },
-    orderBy: { createdAt: 'asc' }
-  });
+function archivedError() {
+  const error = new Error('Conversation is archived. Use RESTORE to reopen it.') as Error & {
+    code?: string;
+  };
+  error.code = 'CONVERSATION_ARCHIVED';
+  return error;
 }
 
-export async function findArchivedConversation(): Promise<Conversation | null> {
-  return prisma.conversation.findFirst({
-    where: { status: ConversationStatus.ARCHIVED },
-    orderBy: { createdAt: 'desc' }
+export async function getConversationForPair(
+  hostId: string,
+  guestId: string
+): Promise<Conversation> {
+  const existing = await prisma.conversation.findUnique({
+    where: { hostId_guestId: { hostId, guestId } }
   });
-}
-
-/**
- * Returns the only active conversation or creates the first one.
- * If a conversation exists but is archived, callers must ask the user to
- * restore it instead of silently reviving it. This keeps Archive distinct
- * from Open.
- */
-export async function getConversationForNewMessage(): Promise<Conversation> {
-  const active = await findActiveConversation();
-  if (active) return active;
-
-  const archived = await findArchivedConversation();
-  if (archived) {
-    const error = new Error('Conversation is archived. Use RESTORE to reopen it.') as Error & {
-      code?: string;
-    };
-    error.code = 'CONVERSATION_ARCHIVED';
-    throw error;
+  if (existing) {
+    if (existing.status === ConversationStatus.ARCHIVED) throw archivedError();
+    if (existing.status === ConversationStatus.DELETED) {
+      return prisma.conversation.update({
+        where: { id: existing.id },
+        data: { status: ConversationStatus.ACTIVE }
+      });
+    }
+    return existing;
   }
-
-  return prisma.conversation.create({ data: {} });
+  return prisma.conversation.create({ data: { hostId, guestId } });
 }
 
-export async function findRestorableConversation(): Promise<Conversation | null> {
-  const archived = await prisma.conversation.findFirst({
-    where: {
-      status: ConversationStatus.ARCHIVED,
-      messages: { some: { deletedAt: null } }
-    },
-    orderBy: { createdAt: 'asc' }
+/** Conversation for the signed-in user with their current peer. */
+export async function findConversationFor(userId: string): Promise<Conversation | null> {
+  const pair = await pairFor(userId);
+  if (!pair) return null;
+  return prisma.conversation.findUnique({
+    where: { hostId_guestId: { hostId: pair.host.id, guestId: pair.guest.id } }
   });
-  if (archived) return archived;
+}
 
-  return prisma.conversation.findFirst({
-    where: {
-      status: ConversationStatus.ACTIVE,
-      messages: { some: { deletedAt: null } }
-    },
-    orderBy: { createdAt: 'asc' }
+export async function getConversationForNewMessage(userId: string): Promise<Conversation> {
+  const pair = await pairFor(userId);
+  if (!pair) throw new Error('No peer account is configured.');
+  return getConversationForPair(pair.host.id, pair.guest.id);
+}
+
+export async function findRestorableConversation(
+  hostId: string,
+  guestId: string
+): Promise<Conversation | null> {
+  return prisma.conversation.findUnique({
+    where: { hostId_guestId: { hostId, guestId } }
   });
 }
 
 export type ConversationSummary = {
   status: ConversationStatus | 'NONE';
   conversationId: string | null;
+  peerId: string | null;
   unreadMessages: number;
   unreadGameMessages: number;
   unreadNotifications: number;
@@ -66,10 +69,22 @@ export type ConversationSummary = {
 };
 
 export async function getConversationSummary(userId: string): Promise<ConversationSummary> {
-  const [active, screen, unreadGameMessages, unreadNotifications] = await Promise.all([
-    findActiveConversation(),
+  const pair = await pairFor(userId);
+  const conversation = pair
+    ? await prisma.conversation.findUnique({
+        where: { hostId_guestId: { hostId: pair.host.id, guestId: pair.guest.id } }
+      })
+    : null;
+
+  const [screen, unreadGameMessages, unreadNotifications] = await Promise.all([
     prisma.screenPreference.findUnique({ where: { userId } }),
-    prisma.gameMessage.count({ where: { senderId: { not: userId }, readAt: null } }),
+    prisma.gameMessage.count({
+      where: {
+        recipientId: userId,
+        senderId: { not: userId },
+        readAt: null
+      }
+    }),
     prisma.notification.count({
       where: {
         userId,
@@ -79,10 +94,10 @@ export async function getConversationSummary(userId: string): Promise<Conversati
     })
   ]);
 
-  const unreadMessages = active
+  const unreadMessages = conversation
     ? await prisma.message.count({
         where: {
-          conversationId: active.id,
+          conversationId: conversation.id,
           destination: MessageDestination.CHAT,
           senderId: { not: userId },
           readAt: null,
@@ -92,8 +107,9 @@ export async function getConversationSummary(userId: string): Promise<Conversati
     : 0;
 
   return {
-    status: active?.status ?? (await findArchivedConversation())?.status ?? 'NONE',
-    conversationId: active?.id ?? null,
+    status: conversation?.status ?? 'NONE',
+    conversationId: conversation?.id ?? null,
+    peerId: pair ? (pair.host.id === userId ? pair.guest.id : pair.host.id) : null,
     unreadMessages,
     unreadGameMessages,
     unreadNotifications,
