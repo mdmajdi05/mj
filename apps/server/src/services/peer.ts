@@ -60,6 +60,7 @@ export type Contact = {
   displayName: string | null;
   role: Role;
   online: boolean;
+  lastSeenAt: string | null;
   unread: number;
   lastMessageAt: string | null;
 };
@@ -81,6 +82,7 @@ export async function contactsFor(userId: string, onlineIds: string[]): Promise<
             displayName: host.displayName,
             role: host.role,
             online: onlineIds.includes(host.id),
+            lastSeenAt: host.lastSeenAt?.toISOString() ?? null,
             unread: 0,
             lastMessageAt: null
           }
@@ -125,6 +127,7 @@ export async function contactsFor(userId: string, onlineIds: string[]): Promise<
         displayName: guest.displayName,
         role: guest.role,
         online: onlineIds.includes(guest.id),
+        lastSeenAt: guest.lastSeenAt?.toISOString() ?? null,
         unread,
         lastMessageAt: lastMessage?.createdAt.toISOString() ?? null
       };

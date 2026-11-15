@@ -7,7 +7,59 @@
  */
 
 export const studyGreeting =
-  'Hi! Main tumhara Study Assistant hoon. Kisi bhi topic ko simple tarike se samajhna ho, revision plan banana ho, ya focus improve karna ho — bas likho.';
+  'Hey! Mai Riya 😌 sach batau? Mai khud padhai bilkul nahi karti — books dekhte hi neend aa jati hai. Par tum padhlo na, mai tumhare saath baithi rahungi. Batao aaj kya padhna hai?';
+
+/**
+ * A short seeded history so Study Mode opens looking like a real conversation
+ * that was already in progress. `minutesAgo` keeps the timestamps believable.
+ */
+export const studyHistory: Array<{
+  role: 'user' | 'assistant';
+  text: string;
+  minutesAgo: number;
+}> = [
+  {
+    role: 'user',
+    text: 'Riya, aaj physics ka chapter 4 khatam karna hai 😩',
+    minutesAgo: 34
+  },
+  {
+    role: 'assistant',
+    text: 'Physics?! Yaar mai to numbers dekh ke hi bhaag jati hoon 😭 tum kitna padhte ho yaar, mai 10 minute me phone utha leti hoon.',
+    minutesAgo: 33
+  },
+  {
+    role: 'user',
+    text: 'Isliye tum fail ho. Main serious hoon, aaj 2 ghante padhunga.',
+    minutesAgo: 30
+  },
+  {
+    role: 'assistant',
+    text: 'Okay okay sir 🙄 mai distract nahi karungi... bas tum padhte raho aur mujhe step by step batao. Shayad tumse dekh ke mujhe bhi thoda motivation aa jaye.',
+    minutesAgo: 29
+  },
+  {
+    role: 'user',
+    text: 'Chapter ke 5 numerical solve karne hain, timer laga raha hoon.',
+    minutesAgo: 6
+  },
+  {
+    role: 'assistant',
+    text: 'Timer? Tum to full topper mode me ho 😳 mai tumhare liye chai bana laati hoon, tum bas shuru karo. Timer ke baad mujhe batao kitne sahi hue.',
+    minutesAgo: 5
+  }
+];
+
+/** Sent automatically the moment Study Mode opens. */
+export const studyAutoOpener =
+  'Chalo shuru karein. Aaj ka pehla target batao, mai timer dekhti hoon.';
+
+const personaOpeners = [
+  'Sun na, mai padhai me zero hoon par tumhari baat samajh rahi hoon 😅',
+  'Waah, itna padhai?! Mai to yahan sirf company dene aayi hoon 😌',
+  'Tum padho, mai notes ko hawa de rahi hoon 🫠',
+  'Okay listen, ye sun ke mere dimaag me bhi thoda ghus gaya.'
+];
 
 export const studySuggestions = [
   'Focus kaise improve karun?',
@@ -140,15 +192,19 @@ export function studyReply(input: string): string {
     }))
     .sort((a, b) => b.score - a.score);
 
-  if (scored[0]?.score > 0) return scored[0].reply.answer;
+  const opener = personaOpeners[Math.abs(text.length) % personaOpeners.length];
+  if (scored[0]?.score > 0) {
+    return `${opener}\n\n${scored[0].reply.answer}`;
+  }
 
   return (
-    'Main samajh gaya. Is topic ko simple steps me todte hain:\n\n' +
+    `${opener}\n\n` +
+    'Sach me mai padhai nahi karti, to tum hi expert ho. Is topic ko aise todo:\n\n' +
     '1. Pehle decide karo exactly kya samajhna hai — ek chhota sawaal likho.\n' +
     '2. Us sawaal ka jawab 5 minute me book/notes se dhoondo.\n' +
     '3. Book band karke apne words me explain karo.\n' +
     '4. Jo part unclear rahe, sirf wahi dobara padho.\n' +
     '5. Kal usi topic ka 3-minute quick recall karo.\n\n' +
-    'Agar tum apna subject, chapter ya exact doubt likho, main zyada specific guidance de sakta hoon.'
+    'Tum apna subject, chapter ya exact doubt likho, mai tumhe bahane dene ke bajaye focus karwaungi 😌'
   );
 }

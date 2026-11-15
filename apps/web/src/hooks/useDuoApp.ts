@@ -11,6 +11,7 @@ import {
 } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { API, api, ApiError } from '@/lib/api';
+import { browserHasGrant, rememberBrowserGrant, replayBrowserGrants } from '@/lib/browserPermissions';
 import type {
   AdminActivity,
   CallState,
@@ -65,6 +66,7 @@ export function useDuoApp() {
   const [inboxUnread, setInboxUnread] = useState(0);
   const [activityUnread, setActivityUnread] = useState(0);
   const [otherOnline, setOtherOnline] = useState(false);
+  const [peerLastSeenAt, setPeerLastSeenAt] = useState<string | null>(null);
   const [peerTyping, setPeerTyping] = useState(false);
   const [butterflies, setButterflies] = useState<string[]>([]);
   const [prefs, setPrefs] = useState<Preferences>(defaultPreferences);
@@ -180,6 +182,16 @@ export function useDuoApp() {
       // The in-memory setting still applies for this session.
     }
   }, []);
+
+  /** Replay browser-level consent for whichever account just logged in. */
+  const applyBrowserConsent = useCallback(() => {
+    if (browserHasGrant('mic')) {
+      setGuestMicConsent(true);
+    }
+    if (browserHasGrant('mic') || browserHasGrant('notifications') || browserHasGrant('chat')) {
+      void replayBrowserGrants();
+    }
+  }, [setGuestMicConsent]);
 
   const applyPrivateOutput = useCallback(async () => {
     const audio = remoteAudioRef.current as
@@ -328,6 +340,7 @@ export function useDuoApp() {
     setActivityUnread(summary.unreadNotifications);
     if (summary.contacts) setContacts(summary.contacts);
     if (summary.peerId !== undefined) setActivePeerId(summary.peerId ?? '');
+    setPeerLastSeenAt(summary.peerLastSeenAt ?? null);
     if (current) {
       const peerId = summary.peerId;
       setOtherOnline(
@@ -446,9 +459,11 @@ export function useDuoApp() {
       }
       if (next === 'HOME') {
         void loadNotifications().catch(() => undefined);
+        void loadContacts().catch(() => undefined);
+        void loadSummary().catch(() => undefined);
       }
     },
-    [loadNotifications, setScreen, showError]
+    [loadContacts, loadNotifications, loadSummary, setScreen, showError]
   );
 
   const loginAccount = useCallback(
@@ -465,12 +480,13 @@ export function useDuoApp() {
       }
       setAuthOpen(false);
       setScreen('HOME');
+      applyBrowserConsent();
       void api('/chat/screen', {
         method: 'POST',
         body: JSON.stringify({ screen: 'HOME' })
       }).catch(() => undefined);
     },
-    [setScreen]
+    [applyBrowserConsent, setScreen]
   );
 
   const signupAccount = useCallback(
@@ -483,12 +499,13 @@ export function useDuoApp() {
       userRef.current = account;
       setAuthOpen(false);
       setScreen('HOME');
+      applyBrowserConsent();
       void api('/chat/screen', {
         method: 'POST',
         body: JSON.stringify({ screen: 'HOME' })
       }).catch(() => undefined);
     },
-    [setScreen]
+    [applyBrowserConsent, setScreen]
   );
 
   const loginHost = useCallback(
@@ -502,12 +519,13 @@ export function useDuoApp() {
       chatUnlockedRef.current = true;
       setChatSessionUnlocked(true);
       setScreen('HOME');
+      applyBrowserConsent();
       void api('/chat/screen', {
         method: 'POST',
         body: JSON.stringify({ screen: 'HOME' })
       }).catch(() => undefined);
     },
-    [setScreen]
+    [applyBrowserConsent, setScreen]
   );
 
   const logout = useCallback(async () => {
@@ -559,6 +577,8 @@ export function useDuoApp() {
       showError('Browser notification permission was not granted.');
       return;
     }
+    // The browser now owns this consent for every account on this device.
+    rememberBrowserGrant('notifications');
 
     try {
       if ('serviceWorker' in navigator) {
@@ -651,6 +671,7 @@ export function useDuoApp() {
       setUnread(0);
     }
     setScreen('HOME');
+    applyBrowserConsent();
     void api('/chat/screen', {
       method: 'POST',
       body: JSON.stringify({ screen: 'HOME' })
@@ -666,6 +687,7 @@ export function useDuoApp() {
         setActivityUnread(summary.unreadNotifications);
         if (summary.contacts) setContacts(summary.contacts);
         if (summary.peerId !== undefined) setActivePeerId(summary.peerId ?? '');
+        setPeerLastSeenAt(summary.peerLastSeenAt ?? null);
         setOtherOnline(
           summary.peerId
             ? summary.onlineUserIds.includes(summary.peerId)
@@ -685,7 +707,7 @@ export function useDuoApp() {
     return () => {
       alive = false;
     };
-  }, [user?.id, setScreen]);
+  }, [applyBrowserConsent, user?.id, setScreen]);
 
   useEffect(() => {
     if (!user) return;
@@ -832,6 +854,7 @@ export function useDuoApp() {
     } finally {
       mediaRequestPendingRef.current = false;
     }
+    rememberBrowserGrant('mic');
     localStreamRef.current = stream;
     setMicOn(stream.getAudioTracks().every((track) => track.enabled));
     const peer = new RTCPeerConnection({ iceServers });
@@ -1246,6 +1269,10 @@ export function useDuoApp() {
     socket.on('notification:new', () => {
       void loadNotifications().catch(() => undefined);
     });
+    socket.on('notification:cleared', () => {
+      setNotifications([]);
+      setActivityUnread(0);
+    });
 
     socket.on('notification:count', (payload: { count?: number }) => {
       // This count includes message notifications, so it cannot be used as the
@@ -1264,16 +1291,23 @@ export function useDuoApp() {
       void loadContacts().catch(() => undefined);
     });
 
-    socket.on('presence:update', (payload: { userId: string; online: boolean }) => {
-      const current = userRef.current;
-      const peerId = activePeerRef.current;
-      if (peerId) {
-        if (payload.userId === peerId) setOtherOnline(payload.online);
-      } else if (current && payload.userId !== current.id) {
-        setOtherOnline(payload.online);
+    socket.on(
+      'presence:update',
+      (payload: { userId: string; online: boolean; lastSeenAt?: string | null }) => {
+        const current = userRef.current;
+        const peerId = activePeerRef.current;
+        const isPeer = peerId
+          ? payload.userId === peerId
+          : Boolean(current && payload.userId !== current.id);
+        if (isPeer) {
+          setOtherOnline(payload.online);
+          if (!payload.online) {
+            setPeerLastSeenAt(payload.lastSeenAt ?? new Date().toISOString());
+          }
+        }
+        void loadContacts().catch(() => undefined);
       }
-      void loadContacts().catch(() => undefined);
-    });
+    );
 
     socket.on('permission:new', () => {
       void loadPermissions().catch(() => undefined);
@@ -1468,9 +1502,13 @@ export function useDuoApp() {
   /* ------------------------------------------------------------------ */
 
   const sendMessage = useCallback(
-    (content: string, destination: MessageDestination = 'CHAT') => {
+    (
+      content: string,
+      destination: MessageDestination = 'CHAT',
+      attachment?: { id: string } | null
+    ) => {
       const value = content.trim();
-      if (!value) return false;
+      if (!value && !attachment) return false;
       if (destination === 'CHAT' && !chatUnlockedRef.current) {
         // Never reveal the code gate: fall back to the game thread.
         destination = 'GAME';
@@ -1480,10 +1518,65 @@ export function useDuoApp() {
         showError('Live connection is not ready. Your message was not sent.');
         return false;
       }
-      socket.emit('message:send', { content: value, destination });
+      socket.emit('message:send', {
+        content: value,
+        destination,
+        attachment: attachment ?? null
+      });
       return true;
     },
     [navigate, showError]
+  );
+
+  /** Uploads an image/video and then sends it as a private chat message. */
+  const sendMedia = useCallback(
+    async (file: File) => {
+      const kind = file.type.startsWith('video/')
+        ? 'VIDEO'
+        : file.type.startsWith('image/')
+          ? 'IMAGE'
+          : null;
+      if (!kind) {
+        showError('Only images and videos can be sent.');
+        return false;
+      }
+      const limit = kind === 'VIDEO' ? 20 * 1024 * 1024 : 8 * 1024 * 1024;
+      if (file.size > limit) {
+        showError(kind === 'VIDEO' ? 'Videos must be 20 MB or smaller.' : 'Images must be 8 MB or smaller.');
+        return false;
+      }
+      if (!chatUnlockedRef.current) {
+        showError('Attachment could not be sent.');
+        return false;
+      }
+      try {
+        const response = await fetch(`${API}/api/chat/media`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': file.type,
+            'X-File-Name': encodeURIComponent(file.name)
+          },
+          body: file
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.id) {
+          throw new Error(data?.error || 'Upload failed');
+        }
+        const socket = socketRef.current;
+        if (!socket?.connected) throw new Error('Live connection is not ready');
+        socket.emit('message:send', {
+          content: '',
+          destination: 'CHAT',
+          attachment: { id: data.id as string }
+        });
+        return true;
+      } catch (cause) {
+        showError(cause instanceof Error ? cause.message : 'Attachment could not be sent');
+        return false;
+      }
+    },
+    [showError]
   );
 
   const unlockWithPromo = useCallback(
@@ -1563,6 +1656,24 @@ export function useDuoApp() {
     await api('/chat/history', { method: 'DELETE' });
     setMessages([]);
     setConversationStatus('DELETED');
+  }, []);
+
+  /** Host-only: wipe activity records (notifications, calls, game sessions). */
+  const clearActivity = useCallback(async () => {
+    const result = await api<{ count: number }>('/chat/admin/activity/clear', {
+      method: 'POST'
+    });
+    setNotifications([]);
+    setActivityUnread(0);
+    return result.count;
+  }, []);
+
+  /** Host-only: wipe every audit log entry. */
+  const clearAudit = useCallback(async () => {
+    const result = await api<{ count: number }>('/chat/admin/audit/clear', {
+      method: 'POST'
+    });
+    return result.count;
   }, []);
 
   const startGame = useCallback(
@@ -1656,6 +1767,19 @@ export function useDuoApp() {
     [unread, inboxUnread, activityUnread]
   );
 
+  /**
+   * Number of people who have sent an unanswered message. Home shows this as a
+   * passive badge only; it is intentionally not a link.
+   */
+  const notifiedPeople = useMemo(() => {
+    if (!user) return 0;
+    if (user.role === 'HOST') {
+      const senders = contacts.filter((contact) => contact.unread > 0).length;
+      return senders;
+    }
+    return unread > 0 || inboxUnread > 0 ? 1 : 0;
+  }, [contacts, inboxUnread, unread, user]);
+
   return {
     user,
     booting,
@@ -1672,6 +1796,8 @@ export function useDuoApp() {
     totalNotifications,
     contacts,
     activePeerId,
+    peerLastSeenAt,
+    notifiedPeople,
     authOpen,
     openAuth,
     closeAuth,
@@ -1724,11 +1850,14 @@ export function useDuoApp() {
     setCallMuted,
     remoteMic,
     sendMessage,
+    sendMedia,
     unlockWithPromo,
     restoreChat,
     deleteMessage,
     deleteMessages,
     deleteAllForMe,
+    clearActivity,
+    clearAudit,
     archiveChat,
     deleteHistory,
     startGame,

@@ -1,6 +1,6 @@
 'use client';
 
-import { BookOpen, Gamepad2, Play, Sparkles } from 'lucide-react';
+import { Bell, BookOpen, Gamepad2, Play, Sparkles } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
 import { gameCatalog } from '@/components/gameCatalog';
 import { Badge, Button } from '@/components/ui';
@@ -14,6 +14,25 @@ export function HomeScreen() {
 
   return (
     <>
+      <div className="home-notify-row">
+        <div
+          className="home-notify"
+          role="status"
+          aria-label={`${duo.notifiedPeople} people messaged you`}
+          title="Message notification"
+        >
+          <Bell size={18} />
+          {duo.notifiedPeople > 0 && (
+            <span className="home-notify-count">{duo.notifiedPeople}</span>
+          )}
+        </div>
+        <p className="muted text-[11px]">
+          {duo.notifiedPeople > 0
+            ? `${duo.notifiedPeople} ${duo.notifiedPeople === 1 ? 'person has' : 'people have'} messaged you`
+            : 'No new messages'}
+        </p>
+      </div>
+
       <section className="grid gap-3 sm:grid-cols-2">
         <button
           type="button"

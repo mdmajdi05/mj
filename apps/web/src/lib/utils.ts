@@ -25,3 +25,24 @@ export function eventLabel(eventType: string) {
     .toLowerCase()
     .replace(/\b\w/g, (character) => character.toUpperCase());
 }
+
+/** Human last-seen line for chat headers. */
+export function formatLastSeen(value?: string | null) {
+  if (!value) return 'last seen recently';
+  const seen = new Date(value).getTime();
+  if (!Number.isFinite(seen)) return 'last seen recently';
+  const diff = Date.now() - seen;
+  if (diff < 60_000) return 'last seen just now';
+  if (diff < 60 * 60_000) return `last seen ${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 24 * 60 * 60_000) return `last seen ${Math.floor(diff / 3_600_000)}h ago`;
+  return `last seen ${new Date(value).toLocaleDateString([], {
+    day: '2-digit',
+    month: 'short'
+  })}`;
+}
+
+export function formatFileSize(bytes?: number | null) {
+  if (!bytes) return '';
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}

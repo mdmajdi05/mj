@@ -16,7 +16,11 @@ import { pairFor, peerFor } from '../services/peer';
 import { emitToUser, notifyUser } from '../services/notifier';
 import { isOnline } from '../services/presence';
 
-type ChatPayload = { content?: string; destination?: MessageDestination };
+type ChatPayload = {
+  content?: string;
+  destination?: MessageDestination;
+  attachment?: { id?: string } | null;
+};
 
 const screenAllowed = new Set([
   'HOME',
@@ -69,7 +73,34 @@ export function registerChatSocketHandlers(io: Server, socket: Socket) {
 
     if (typeof payload?.content !== 'string') return;
     const content = payload.content.trim();
-    if (!content || content.length > 5000) return;
+    if (content.length > 5000) return;
+
+    const attachmentId =
+      typeof payload?.attachment?.id === 'string' ? payload.attachment.id : null;
+    let attachment: {
+      attachmentId: string;
+      attachmentKind: string;
+      attachmentMime: string;
+      attachmentName: string | null;
+      attachmentSize: number;
+    } | null = null;
+    if (attachmentId) {
+      const media = await prisma.chatMedia.findUnique({ where: { id: attachmentId } });
+      // Only the uploader can attach their own media to a message.
+      if (!media || media.ownerId !== user.id) {
+        emitError('Attachment not found');
+        return;
+      }
+      attachment = {
+        attachmentId: media.id,
+        attachmentKind: media.kind,
+        attachmentMime: media.mimeType,
+        attachmentName: media.fileName,
+        attachmentSize: media.size
+      };
+    }
+
+    if (!content && !attachment) return;
 
     const destination =
       payload.destination === MessageDestination.GAME
@@ -88,11 +119,13 @@ export function registerChatSocketHandlers(io: Server, socket: Socket) {
     }
 
     if (destination === MessageDestination.GAME) {
+      if (!content) return;
+      // Emergency message: it is addressed to the Host only. The sender never
+      // receives an echo, and no other account can read it.
       const message = await prisma.gameMessage.create({
         data: { senderId: user.id, recipientId: other.id, content },
         include: { sender: { select: { username: true, role: true, displayName: true } } }
       });
-      emitToUser(user.id, 'game:message:new', message);
       emitToUser(other.id, 'game:message:new', message);
       await notifyUser({
         userId: other.id,
@@ -125,7 +158,8 @@ export function registerChatSocketHandlers(io: Server, socket: Socket) {
         senderId: user.id,
         content,
         destination: MessageDestination.CHAT,
-        deliveredAt: delivered ? new Date() : null
+        deliveredAt: delivered ? new Date() : null,
+        ...(attachment ?? {})
       },
       include: { sender: { select: { username: true, role: true, displayName: true } } }
     });

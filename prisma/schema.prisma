@@ -39,6 +39,7 @@ model User {
   role               Role
   passwordHash       String
   chatUnlocked       Boolean           @default(false)
+  lastSeenAt         DateTime?
   createdAt          DateTime          @default(now())
   updatedAt          DateTime          @updatedAt
   sessions           Session[]
@@ -84,6 +85,11 @@ model Message {
   deliveredAt    DateTime?
   readAt         DateTime?
   deletedAt      DateTime?
+  attachmentId   String?
+  attachmentKind String?
+  attachmentMime String?
+  attachmentName String?
+  attachmentSize Int?
   hides          MessageHide[]
   @@index([conversationId, createdAt])
   @@index([destination, createdAt])
@@ -100,6 +106,19 @@ model MessageHide {
   createdAt DateTime @default(now())
   @@unique([messageId, userId])
   @@index([userId])
+}
+/// Private image/video attachments. Bytes live in Postgres so deployments do
+/// not depend on a writable volume, and access is only through an authed route.
+model ChatMedia {
+  id        String   @id @default(cuid())
+  ownerId   String
+  kind      String
+  mimeType  String
+  fileName  String?
+  size      Int
+  data      Bytes
+  createdAt DateTime @default(now())
+  @@index([ownerId])
 }
 model Game {
   id       String        @id @default(cuid())

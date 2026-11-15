@@ -85,8 +85,19 @@ export function attachSocketHandlers(io: Server) {
     socket.on('disconnect', () => {
       const lastConnection = removeConnection(user.id, socket.id);
       broadcastPresence(io);
-      // Only tidy up calls when this was the participant's final live socket.
       if (lastConnection) {
+        // Persist last seen for the chat header and tell everyone they left.
+        prisma.user
+          .update({ where: { id: user.id }, data: { lastSeenAt: new Date() } })
+          .then((account) => {
+            io.emit('presence:update', {
+              userId: user.id,
+              online: false,
+              lastSeenAt: account.lastSeenAt?.toISOString() ?? null
+            });
+          })
+          .catch(() => undefined);
+        // Only tidy up calls when this was the participant's final live socket.
         void endCallsForDisconnect(user.id, user.username).catch((error) =>
           console.error('Call cleanup on disconnect failed', error)
         );

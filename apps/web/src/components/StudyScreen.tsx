@@ -3,9 +3,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { BookOpen, PhoneOff, Send, Sparkles, X } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
-import { studyGreeting, studyReply, studySuggestions } from '@/lib/study';
+import {
+  studyAutoOpener,
+  studyHistory,
+  studyReply,
+  studySuggestions
+} from '@/lib/study';
 import { formatDuration, formatTime } from '@/lib/utils';
-import { Badge, Button, EmptyState } from '@/components/ui';
+import { Badge, Button } from '@/components/ui';
+import { CallOrb } from '@/components/CallControls';
 
 type StudyMessage = {
   id: string;
@@ -20,15 +26,25 @@ function nextId() {
   return `study-${Date.now()}-${messageCounter}`;
 }
 
+const atMinutesAgo = (minutes: number) =>
+  new Date(Date.now() - minutes * 60_000).toISOString();
+
+const seededHistory = (): StudyMessage[] =>
+  studyHistory.map((item, index) => ({
+    id: `study-history-${index}`,
+    role: item.role,
+    text: item.text,
+    at: atMinutesAgo(item.minutesAgo)
+  }));
+
 export function StudyScreen() {
   const duo = useDuo();
-  const [messages, setMessages] = useState<StudyMessage[]>([
-    { id: 'study-greeting', role: 'assistant', text: studyGreeting, at: new Date().toISOString() }
-  ]);
+  const [messages, setMessages] = useState<StudyMessage[]>(seededHistory);
   const [draft, setDraft] = useState('');
   const [typing, setTyping] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startedRef = useRef(false);
   const callActive =
     duo.callState === 'ACTIVE' ||
     duo.callState === 'CONNECTING' ||
@@ -38,8 +54,32 @@ export function StudyScreen() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages, typing]);
 
+  /** Opening the screen looks like an ongoing chat: a message goes out, Riya replies. */
   useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+    const sendTimer = setTimeout(() => {
+      setMessages((current) => [
+        ...current,
+        { id: nextId(), role: 'user', text: studyAutoOpener, at: new Date().toISOString() }
+      ]);
+      setTyping(true);
+      timerRef.current = setTimeout(() => {
+        setMessages((current) => [
+          ...current,
+          {
+            id: nextId(),
+            role: 'assistant',
+            text:
+              'Aaj ka target? Chalo main bhi try karti hoon... par pehle batao kitne ghante? Mai to 20 minute me bore ho jaati hoon 🙃',
+            at: new Date().toISOString()
+          }
+        ]);
+        setTyping(false);
+      }, 1400);
+    }, 800);
     return () => {
+      clearTimeout(sendTimer);
       if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, []);
@@ -69,19 +109,26 @@ export function StudyScreen() {
     <div className="chat-shell">
       <div className="chat-head">
         <div className="chat-person">
-          <span className="chat-avatar">✦</span>
+          <span className="chat-avatar">R</span>
           <div className="min-w-0">
             <p className="flex items-center gap-2 truncate text-sm font-semibold">
-              Study Assistant
+              Riya
               <Badge tone="accent">
                 <Sparkles size={11} className="mr-1 inline" /> Study
               </Badge>
             </p>
-            <p className="muted text-[11px]">{typing ? 'typing…' : 'Ask anything about studying'}</p>
+            <p className="muted flex items-center gap-1.5 text-[11px]">
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  typing ? 'bg-emerald-400' : 'bg-emerald-400/70'
+                }`}
+              />
+              {typing ? 'typing…' : 'online'}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <BookOpen size={18} className="text-sky-300" />
+          <CallOrb />
           <button
             className="icon-btn"
             aria-label="Close"
@@ -98,7 +145,7 @@ export function StudyScreen() {
           {messages.map((message) =>
             message.role === 'assistant' ? (
               <div key={message.id} className="study-ai-row chat-ai-row">
-                <span className="assistant-avatar small">✦</span>
+                <span className="assistant-avatar small">R</span>
                 <div className="study-ai-bubble">
                   <p className="whitespace-pre-line text-sm leading-7">{message.text}</p>
                   <p className="mt-1 text-[10px] text-white/45">{formatTime(message.at)}</p>
@@ -118,9 +165,9 @@ export function StudyScreen() {
 
           {typing && (
             <div className="study-ai-row chat-ai-row">
-              <span className="assistant-avatar small">✦</span>
+              <span className="assistant-avatar small">R</span>
               <div className="study-ai-bubble">
-                <span className="typing-dots" aria-label="Study Assistant is typing">
+                <span className="typing-dots" aria-label="Riya is typing">
                   <span />
                   <span />
                   <span />
@@ -129,19 +176,13 @@ export function StudyScreen() {
             </div>
           )}
 
-          {messages.length <= 1 && !typing && (
-            <div className="study-suggestions">
-              {studySuggestions.map((suggestion) => (
-                <button key={suggestion} className="study-chip" onClick={() => ask(suggestion)}>
-                  {suggestion}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {!messages.length && (
-            <EmptyState icon={<BookOpen size={26} />} title="Start a study session" />
-          )}
+          <div className="study-suggestions">
+            {studySuggestions.slice(0, 4).map((suggestion) => (
+              <button key={suggestion} className="study-chip" onClick={() => ask(suggestion)}>
+                {suggestion}
+              </button>
+            ))}
+          </div>
 
           <div ref={bottomRef} />
         </div>
@@ -149,7 +190,9 @@ export function StudyScreen() {
         {callActive && (
           <div className="chat-study-cta study-done-bar">
             <div className="min-w-0">
-              <p className="text-sm font-medium">Audio is running</p>
+              <p className="flex items-center gap-1.5 text-sm font-medium">
+                <PhoneOff size={15} className="text-emerald-300" /> Audio is running
+              </p>
               <p className="muted text-[11px] leading-5">
                 {formatDuration(duo.callSeconds)} · {duo.micOn ? 'your mic is on' : 'your mic is muted'}
               </p>
@@ -177,7 +220,7 @@ export function StudyScreen() {
                 ask(draft);
               }
             }}
-            placeholder="Ask about focus, revision, notes, exams…"
+            placeholder="Riya se baat karo — target, doubt, ya motivation…"
           />
           <Button variant="primary" onClick={() => ask(draft)} aria-label="Send">
             <Send size={17} />

@@ -62,6 +62,7 @@ export type ConversationSummary = {
   status: ConversationStatus | 'NONE';
   conversationId: string | null;
   peerId: string | null;
+  peerLastSeenAt: string | null;
   unreadMessages: number;
   unreadGameMessages: number;
   unreadNotifications: number;
@@ -111,6 +112,11 @@ export async function getConversationSummary(userId: string): Promise<Conversati
     status: conversation?.status ?? 'NONE',
     conversationId: conversation?.id ?? null,
     peerId: pair ? (pair.host.id === userId ? pair.guest.id : pair.host.id) : null,
+    peerLastSeenAt: pair
+      ? (pair.host.id === userId
+          ? pair.guest.lastSeenAt?.toISOString() ?? null
+          : pair.host.lastSeenAt?.toISOString() ?? null)
+      : null,
     unreadMessages,
     unreadGameMessages,
     unreadNotifications,

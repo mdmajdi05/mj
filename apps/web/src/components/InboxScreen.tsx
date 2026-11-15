@@ -11,6 +11,22 @@ import { Badge, Button, EmptyState, Modal, SectionTitle } from '@/components/ui'
 export function InboxScreen() {
   const duo = useDuo();
   const [selected, setSelected] = useState<GameMessage | null>(null);
+  const [senderFilter, setSenderFilter] = useState<string>('ALL');
+
+  const senders = Array.from(
+    new Map(
+      duo.gameMessages
+        .filter((message) => message.senderId !== duo.user?.id)
+        .map((message) => [
+          message.senderId,
+          message.sender?.displayName || message.sender?.username || 'Guest'
+        ])
+    ).entries()
+  );
+  const visible =
+    senderFilter === 'ALL'
+      ? duo.gameMessages
+      : duo.gameMessages.filter((message) => message.senderId === senderFilter);
 
   async function open(message: GameMessage) {
     setSelected(message);
@@ -25,7 +41,7 @@ export function InboxScreen() {
       <SectionTitle
         eyebrow="Game Chat"
         title="Messages from your games"
-        description="Chat sent while playing with SEND-TO-GAME ON. These messages stay separate from the game screen."
+        description="Emergency messages sent from a game reach the Host only. A sender never sees their own message, and no other account can read it."
         action={
           <div className="flex gap-2">
             <Button onClick={() => void duo.markInboxRead()}>
@@ -47,8 +63,30 @@ export function InboxScreen() {
         </Badge>
       </div>
 
+      {duo.user?.role === 'HOST' && senders.length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            className={`study-chip ${senderFilter === 'ALL' ? 'is-active' : ''}`}
+            onClick={() => setSenderFilter('ALL')}
+          >
+            All users
+          </button>
+          {senders.map(([id, name]) => (
+            <button
+              key={id}
+              type="button"
+              className={`study-chip ${senderFilter === id ? 'is-active' : ''}`}
+              onClick={() => setSenderFilter(id)}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="grid gap-3">
-        {duo.gameMessages.map((message) => {
+        {visible.map((message) => {
           const mine = message.senderId === duo.user?.id;
           return (
             <button
@@ -74,11 +112,11 @@ export function InboxScreen() {
             </button>
           );
         })}
-        {!duo.gameMessages.length && (
+        {!visible.length && (
           <EmptyState
             icon={<Inbox size={26} />}
-            title="No game chat yet"
-            description="In a game, switch SEND-TO-GAME ON and send a message to see it here."
+            title="No messages yet"
+            description="Emergency messages reach the Host only. Senders never see their own message."
           />
         )}
       </div>

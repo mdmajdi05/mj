@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
@@ -348,6 +348,73 @@ chatRouter.post(
   })
 );
 
+/* ------------------------------------------------------------------ */
+/* Private media (images and short videos)                             */
+/* ------------------------------------------------------------------ */
+
+const mediaKindOf = (mimeType: string) =>
+  mimeType.startsWith('video/') ? 'VIDEO' : mimeType.startsWith('image/') ? 'IMAGE' : null;
+
+chatRouter.post(
+  '/media',
+  requireChatUnlock,
+  express.raw({ type: ['image/*', 'video/*'], limit: '20mb' }),
+  asyncHandler(async (req: AuthRequest, res) => {
+    const body = req.body as unknown;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      throw new HttpError(400, 'Choose an image or a video to send');
+    }
+    const mimeType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    const kind = mediaKindOf(mimeType);
+    if (!kind) throw new HttpError(400, 'Only images and videos are supported');
+    if (kind === 'IMAGE' && body.length > 8 * 1024 * 1024) {
+      throw new HttpError(413, 'Images must be 8 MB or smaller');
+    }
+    if (kind === 'VIDEO' && body.length > 20 * 1024 * 1024) {
+      throw new HttpError(413, 'Videos must be 20 MB or smaller');
+    }
+
+    const rawName = String(req.headers['x-file-name'] || '');
+    let fileName: string | null = null;
+    try {
+      fileName = rawName ? decodeURIComponent(rawName).slice(0, 160) : null;
+    } catch {
+      fileName = rawName.slice(0, 160) || null;
+    }
+    const media = await prisma.chatMedia.create({
+      data: {
+        ownerId: req.user!.id,
+        kind,
+        mimeType,
+        fileName,
+        size: body.length,
+        data: new Uint8Array(body)
+      },
+      select: { id: true, kind: true, mimeType: true, fileName: true, size: true }
+    });
+    res.status(201).json(media);
+  })
+);
+
+chatRouter.get(
+  '/media/:id',
+  asyncHandler(async (req: AuthRequest, res) => {
+    const media = await prisma.chatMedia.findUnique({ where: { id: req.params.id } });
+    if (!media) throw new HttpError(404, 'Attachment not found');
+
+    // Only the uploader or their current chat partner may read the bytes.
+    const pair = await pairFor(req.user!.id);
+    const allowed =
+      media.ownerId === req.user!.id ||
+      (pair && (pair.host.id === media.ownerId || pair.guest.id === media.ownerId));
+    if (!allowed) throw new HttpError(404, 'Attachment not found');
+
+    res.setHeader('Content-Type', media.mimeType);
+    res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+    res.send(Buffer.from(media.data));
+  })
+);
+
 chatRouter.delete(
   '/history',
   requireHost,
@@ -534,13 +601,12 @@ chatRouter.post(
 chatRouter.get(
   '/inbox',
   asyncHandler(async (req: AuthRequest, res) => {
-    const peer = await otherUser(req.user!.id);
+    // Inbox only shows messages addressed to this account. A sender never sees
+    // their own emergency message, and other Guests can never read it.
     const rows = await prisma.gameMessage.findMany({
       where: {
-        OR: [
-          { senderId: req.user!.id, recipientId: peer.id },
-          { senderId: peer.id, recipientId: req.user!.id }
-        ]
+        recipientId: req.user!.id,
+        senderId: { not: req.user!.id }
       },
       orderBy: { createdAt: 'asc' },
       include: { sender: { select: { username: true, role: true, displayName: true } } },
@@ -675,6 +741,53 @@ chatRouter.get(
       orderBy: { createdAt: 'desc' }
     });
     res.json(rows);
+  })
+);
+
+chatRouter.post(
+  '/permissions/remember',
+  asyncHandler(async (req: AuthRequest, res) => {
+    // Browser-level grants are replayed for whichever account logs in on this
+    // browser. The browser owns the consent; the server just records it for
+    // this account so a fresh login keeps working without another prompt.
+    const parsed = z
+      .object({
+        names: z
+          .array(z.enum(['REMOTE_MIC_CONTROL', 'SHARED_GAME_ACTIVITY', 'CALL_CONTROLS']))
+          .min(1)
+      })
+      .safeParse(req.body);
+    if (!parsed.success) throw new HttpError(400, 'Invalid permission list');
+
+    for (const name of parsed.data.names) {
+      const existing = await prisma.permission.findFirst({
+        where: { name, requestedBy: req.user!.id }
+      });
+      if (existing) {
+        await prisma.permission.update({
+          where: { id: existing.id },
+          data: {
+            status: PermissionStatus.GRANTED,
+            grantedBy: req.user!.id,
+            grantedAt: new Date(),
+            revokedAt: null,
+            rejectedAt: null
+          }
+        });
+      } else {
+        await prisma.permission.create({
+          data: {
+            name,
+            description: 'Granted in this browser',
+            requestedBy: req.user!.id,
+            status: PermissionStatus.GRANTED,
+            grantedBy: req.user!.id,
+            grantedAt: new Date()
+          }
+        });
+      }
+    }
+    res.json({ ok: true });
   })
 );
 
@@ -1056,6 +1169,36 @@ chatRouter.get(
       gameSessions,
       presence: onlineUserIds()
     });
+  })
+);
+
+chatRouter.post(
+  '/admin/activity/clear',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    // Host may wipe activity and audit trails. No audit entry is written for
+    // the wipe itself so the trail is genuinely cleared.
+    const [notifications, calls, gameSessions, restoreEvents] = await prisma.$transaction([
+      prisma.notification.deleteMany({}),
+      prisma.callParticipant.deleteMany({}),
+      prisma.gameSession.deleteMany({}),
+      prisma.restoreEvent.deleteMany({})
+    ]);
+    await prisma.call.deleteMany({});
+    emitToUser(req.user!.id, 'notification:cleared', {});
+    res.json({
+      ok: true,
+      count: notifications.count + calls.count + gameSessions.count + restoreEvents.count
+    });
+  })
+);
+
+chatRouter.post(
+  '/admin/audit/clear',
+  requireHost,
+  asyncHandler(async (_req: AuthRequest, res) => {
+    const result = await prisma.adminAuditLog.deleteMany({});
+    res.json({ ok: true, count: result.count });
   })
 );
 

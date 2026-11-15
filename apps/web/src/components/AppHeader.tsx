@@ -18,7 +18,6 @@ import {
 import { useDuo } from '@/hooks/useDuoApp';
 import { formatDuration } from '@/lib/utils';
 import { Badge } from '@/components/ui';
-import { CallOrb } from '@/components/CallControls';
 
 /**
  * Minimal, mobile-first header. On the games home it contains only the brand
@@ -74,8 +73,6 @@ export function AppHeader() {
       </button>
 
       <div className="flex items-center gap-2">
-        {inPrivateSurface && <CallOrb />}
-
         {inPrivateSurface && callActive && (
           <button
             type="button"

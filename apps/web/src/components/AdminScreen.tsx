@@ -125,8 +125,41 @@ export function AdminScreen() {
     }
   }
 
-  async function deleteHistory() {
-    if (deleteText.trim().toUpperCase() !== 'DELETE') {
+  async function clearAllActivity() {
+    if (
+      !window.confirm(
+        'Delete all activity (notifications, call history, game sessions)? This cannot be undone.'
+      )
+    ) {
+      return;
+    }
+    setBusy('activity');
+    try {
+      const result = await duo.clearActivity();
+      await refresh(search);
+      duo.setNotice(`Activity cleared (${result} records).`);
+    } catch (cause) {
+      duo.setError(cause instanceof Error ? cause.message : 'Could not clear activity');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function clearAuditLog() {
+    if (!window.confirm('Delete the entire audit log? This cannot be undone.')) return;
+    setBusy('audit');
+    try {
+      const result = await duo.clearAudit();
+      await refresh(search);
+      duo.setNotice(`Audit log cleared (${result} records).`);
+    } catch (cause) {
+      duo.setError(cause instanceof Error ? cause.message : 'Could not clear audit log');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function deleteHistory() {    if (deleteText.trim().toUpperCase() !== 'DELETE') {
       duo.setError('Type DELETE to confirm permanent history deletion.');
       return;
     }
@@ -513,7 +546,21 @@ export function AdminScreen() {
       )}
 
       {tab === 'activity' && (
-        <div className="grid gap-4 lg:grid-cols-2">
+        <>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="muted text-xs">
+              Host can wipe activity and audit trails at any time.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="danger" onClick={() => void clearAllActivity()} disabled={busy === 'activity'}>
+                <Trash2 size={15} /> Clear all activity
+              </Button>
+              <Button variant="danger" onClick={() => void clearAuditLog()} disabled={busy === 'audit'}>
+                <Trash2 size={15} /> Clear audit log
+              </Button>
+            </div>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2">
           <Panel className="p-5">
             <p className="eyebrow">Notifications</p>
             <h3 className="mt-1 text-lg font-semibold">Activity feed</h3>
@@ -597,7 +644,8 @@ export function AdminScreen() {
               {!activity?.logs.length && <p className="muted text-sm">No audit events yet.</p>}
             </div>
           </Panel>
-        </div>
+          </div>
+        </>
       )}
 
       <Modal

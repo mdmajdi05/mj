@@ -6,6 +6,7 @@ export type User = {
   displayName?: string | null;
   role: Role;
   chatUnlocked: boolean;
+  lastSeenAt?: string | null;
 };
 
 export type Contact = {
@@ -14,6 +15,7 @@ export type Contact = {
   displayName?: string | null;
   role: Role;
   online: boolean;
+  lastSeenAt?: string | null;
   unread: number;
   lastMessageAt?: string | null;
 };
@@ -40,6 +42,11 @@ export type Message = {
   readAt?: string | null;
   deliveredAt?: string | null;
   destination: MessageDestination;
+  attachmentId?: string | null;
+  attachmentKind?: string | null;
+  attachmentMime?: string | null;
+  attachmentName?: string | null;
+  attachmentSize?: number | null;
   sender?: { username: string; role: Role; displayName?: string | null };
 };
 
@@ -101,6 +108,7 @@ export type Summary = {
   status: ConversationStatus;
   conversationId: string | null;
   peerId?: string | null;
+  peerLastSeenAt?: string | null;
   unreadMessages: number;
   unreadGameMessages: number;
   unreadNotifications: number;
