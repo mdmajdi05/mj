@@ -18,19 +18,14 @@ export function HomeScreen() {
         <div
           className="home-notify"
           role="status"
-          aria-label={`${duo.notifiedPeople} people messaged you`}
-          title="Message notification"
+          aria-label="Notifications"
+          title="Notifications"
         >
           <Bell size={18} />
           {duo.notifiedPeople > 0 && (
             <span className="home-notify-count">{duo.notifiedPeople}</span>
           )}
         </div>
-        <p className="muted text-[11px]">
-          {duo.notifiedPeople > 0
-            ? `${duo.notifiedPeople} ${duo.notifiedPeople === 1 ? 'person has' : 'people have'} messaged you`
-            : 'No new messages'}
-        </p>
       </div>
 
       <section className="grid gap-3 sm:grid-cols-2">

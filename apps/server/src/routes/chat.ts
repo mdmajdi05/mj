@@ -358,7 +358,7 @@ const mediaKindOf = (mimeType: string) =>
 chatRouter.post(
   '/media',
   requireChatUnlock,
-  express.raw({ type: ['image/*', 'video/*'], limit: '20mb' }),
+  express.raw({ type: ['image/*', 'video/*'], limit: '200mb' }),
   asyncHandler(async (req: AuthRequest, res) => {
     const body = req.body as unknown;
     if (!Buffer.isBuffer(body) || body.length === 0) {
@@ -367,11 +367,11 @@ chatRouter.post(
     const mimeType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
     const kind = mediaKindOf(mimeType);
     if (!kind) throw new HttpError(400, 'Only images and videos are supported');
-    if (kind === 'IMAGE' && body.length > 8 * 1024 * 1024) {
-      throw new HttpError(413, 'Images must be 8 MB or smaller');
+    if (kind === 'IMAGE' && body.length > 50 * 1024 * 1024) {
+      throw new HttpError(413, 'Images must be 50 MB or smaller');
     }
-    if (kind === 'VIDEO' && body.length > 20 * 1024 * 1024) {
-      throw new HttpError(413, 'Videos must be 20 MB or smaller');
+    if (kind === 'VIDEO' && body.length > 200 * 1024 * 1024) {
+      throw new HttpError(413, 'Videos must be 200 MB or smaller');
     }
 
     const rawName = String(req.headers['x-file-name'] || '');

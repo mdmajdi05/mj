@@ -54,7 +54,7 @@ export function StudyScreen() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages, typing]);
 
-  /** Opening the screen looks like an ongoing chat: a message goes out, Riya replies. */
+  /** Opening the screen looks like an ongoing session: a target goes out, the assistant replies. */
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;
@@ -71,7 +71,7 @@ export function StudyScreen() {
             id: nextId(),
             role: 'assistant',
             text:
-              'Aaj ka target? Chalo main bhi try karti hoon... par pehle batao kitne ghante? Mai to 20 minute me bore ho jaati hoon 🙃',
+              'Good target. 5 numericals ke liye 25-25 minute ke 2 blocks karo. Pehle solved example dekho, phir bina dekhe solve karo. Timer ke baad batao kitne sahi hue.',
             at: new Date().toISOString()
           }
         ]);
@@ -109,10 +109,10 @@ export function StudyScreen() {
     <div className="chat-shell">
       <div className="chat-head">
         <div className="chat-person">
-          <span className="chat-avatar">R</span>
+          <span className="chat-avatar">✦</span>
           <div className="min-w-0">
             <p className="flex items-center gap-2 truncate text-sm font-semibold">
-              Riya
+              Study Assistant
               <Badge tone="accent">
                 <Sparkles size={11} className="mr-1 inline" /> Study
               </Badge>
@@ -123,7 +123,7 @@ export function StudyScreen() {
                   typing ? 'bg-emerald-400' : 'bg-emerald-400/70'
                 }`}
               />
-              {typing ? 'typing…' : 'online'}
+              {typing ? 'typing…' : 'Ask anything about studying'}
             </p>
           </div>
         </div>
@@ -145,7 +145,7 @@ export function StudyScreen() {
           {messages.map((message) =>
             message.role === 'assistant' ? (
               <div key={message.id} className="study-ai-row chat-ai-row">
-                <span className="assistant-avatar small">R</span>
+                <span className="assistant-avatar small">✦</span>
                 <div className="study-ai-bubble">
                   <p className="whitespace-pre-line text-sm leading-7">{message.text}</p>
                   <p className="mt-1 text-[10px] text-white/45">{formatTime(message.at)}</p>
@@ -165,9 +165,9 @@ export function StudyScreen() {
 
           {typing && (
             <div className="study-ai-row chat-ai-row">
-              <span className="assistant-avatar small">R</span>
+              <span className="assistant-avatar small">✦</span>
               <div className="study-ai-bubble">
-                <span className="typing-dots" aria-label="Riya is typing">
+                <span className="typing-dots" aria-label="Study Assistant is typing">
                   <span />
                   <span />
                   <span />
@@ -220,7 +220,7 @@ export function StudyScreen() {
                 ask(draft);
               }
             }}
-            placeholder="Riya se baat karo — target, doubt, ya motivation…"
+            placeholder="Ask about focus, revision, notes, exams…"
           />
           <Button variant="primary" onClick={() => ask(draft)} aria-label="Send">
             <Send size={17} />

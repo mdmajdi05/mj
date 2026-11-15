@@ -1540,9 +1540,11 @@ export function useDuoApp() {
         showError('Only images and videos can be sent.');
         return false;
       }
-      const limit = kind === 'VIDEO' ? 20 * 1024 * 1024 : 8 * 1024 * 1024;
+      const limit = kind === 'VIDEO' ? 200 * 1024 * 1024 : 50 * 1024 * 1024;
       if (file.size > limit) {
-        showError(kind === 'VIDEO' ? 'Videos must be 20 MB or smaller.' : 'Images must be 8 MB or smaller.');
+        showError(
+          kind === 'VIDEO' ? 'Videos must be 200 MB or smaller.' : 'Images must be 50 MB or smaller.'
+        );
         return false;
       }
       if (!chatUnlockedRef.current) {

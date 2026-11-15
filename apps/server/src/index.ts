@@ -84,8 +84,8 @@ attachSocketHandlers(io);
 app.set('io', io);
 
 const port = Number(process.env.PORT || 4000);
-server.requestTimeout = 30_000;
-server.headersTimeout = 35_000;
+server.requestTimeout = 300_000;
+server.headersTimeout = 120_000;
 
 server.listen(port, () => {
   console.log(`Study with Game API listening on ${port}`);

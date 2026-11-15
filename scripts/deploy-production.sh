@@ -634,7 +634,7 @@ server {
   listen 80;
   listen [::]:80;
   server_name $DOMAIN;
-  client_max_body_size 2m;
+  client_max_body_size 210m;
   server_tokens off;
 
   location /.well-known/acme-challenge/ {
@@ -669,7 +669,7 @@ server {
   listen 80;
   listen [::]:80;
   server_name $DOMAIN;
-  client_max_body_size 2m;
+  client_max_body_size 210m;
   server_tokens off;
 
   location /.well-known/acme-challenge/ {
@@ -683,7 +683,7 @@ server {
   listen 443 ssl http2;
   listen [::]:443 ssl http2;
   server_name $DOMAIN;
-  client_max_body_size 2m;
+  client_max_body_size 210m;
   server_tokens off;
 
   ssl_certificate "$CERTBOT_DIR/conf/live/$DOMAIN/fullchain.pem";
