@@ -87,6 +87,7 @@ export function useDuoApp() {
   const [callMuted, setCallMuted] = useState(false);
   const [incomingMicRequest, setIncomingMicRequest] = useState(false);
   const [audioOutput, setAudioOutputState] = useState<AudioOutput>('EARPIECE');
+  const [bluetoothAvailable, setBluetoothAvailable] = useState(false);
   const micOnRef = useRef(true);
   const callMutedRef = useRef(false);
   const [callHidden, setCallHidden] = useState(false);
@@ -264,6 +265,34 @@ export function useDuoApp() {
     },
     [applyAudioOutput]
   );
+
+  /**
+   * Detects whether a Bluetooth output is available so the Speaker control can
+   * offer a dropdown instead of a plain Earpiece/Speaker toggle.
+   */
+  const refreshAudioOutputs = useCallback(async () => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      setBluetoothAvailable(
+        devices.some(
+          (device) =>
+            device.kind === 'audiooutput' &&
+            /bluetooth|airpods|buds|wireless|bt\b/i.test(device.label)
+        )
+      );
+    } catch {
+      setBluetoothAvailable(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshAudioOutputs();
+    const media = navigator.mediaDevices;
+    if (!media?.addEventListener) return;
+    const handler = () => void refreshAudioOutputs();
+    media.addEventListener('devicechange', handler);
+    return () => media.removeEventListener('devicechange', handler);
+  }, [refreshAudioOutputs]);
 
   useEffect(() => {
     privacyOutputRef.current = () => applyAudioOutput('EARPIECE');
@@ -1094,19 +1123,15 @@ export function useDuoApp() {
   }, [setMySpeaker, setPeerMic]);
 
   /**
-   * Leaving the private surface never ends the session and never touches this
-   * side's own microphone. It only silences the other side until this account
-   * explicitly asks for audio again.
+   * Leaving the private surface only disables the other participant's
+   * microphone. This side's own microphone and speaker stay exactly as they
+   * were; coming back re-enables the other mic with an explicit UNMUTE.
    */
   const pauseAudioForPrivacy = useCallback(() => {
     if (!callIdRef.current) return;
     socketRef.current?.emit('call:remote-mic', { enabled: false });
-    socketRef.current?.emit('call:speaker-status', {
-      callId: callIdRef.current,
-      enabled: false
-    });
-    callMutedRef.current = true;
-    setCallMuted(true);
+    setRemotePermissionOn(false);
+    setRemoteMicOn(false);
   }, []);
 
   /** Either side may ask to be audible again; the other side decides. */
@@ -1247,8 +1272,11 @@ export function useDuoApp() {
   }, [callState, callId]);
 
   useEffect(() => {
-    if (callState === 'ACTIVE') void applyAudioOutput(audioOutput);
-  }, [callState, applyAudioOutput, audioOutput]);
+    if (callState === 'ACTIVE') {
+      void applyAudioOutput(audioOutput);
+      void refreshAudioOutputs();
+    }
+  }, [callState, applyAudioOutput, audioOutput, refreshAudioOutputs]);
 
   useEffect(() => {
     if (!incomingCall) autoAnsweredRef.current = '';
@@ -1997,6 +2025,8 @@ export function useDuoApp() {
     callMuted,
     audioOutput,
     setAudioOutput,
+    bluetoothAvailable,
+    refreshAudioOutputs,
     setMySpeaker,
     setPeerMic,
     togglePeerMic,

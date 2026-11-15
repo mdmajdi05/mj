@@ -1,11 +1,88 @@
 'use client';
 
-import { useState } from 'react';
-import { Mic, MicOff, Ticket, VolumeX } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Mic, MicOff, Ticket, Volume2, VolumeX } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
 import { Button, Modal } from '@/components/ui';
 
 const otherName = (role?: string) => (role === 'HOST' ? 'User' : 'Host');
+
+const outputLabel = (mode: string) =>
+  mode === 'BLUETOOTH' ? 'Bluetooth' : mode === 'SPEAKER' ? 'Speaker' : 'Earpiece';
+
+/**
+ * One Speaker control only.
+ * - No Bluetooth: a single tap toggles Earpiece <-> Speaker.
+ * - Bluetooth available: a tap opens a dropdown with all three outputs.
+ */
+function SpeakerControl({ compact = false }: { compact?: boolean }) {
+  const duo = useDuo();
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLSpanElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (event: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const size = compact ? 14 : 14;
+  const label = outputLabel(duo.audioOutput);
+
+  if (!duo.bluetoothAvailable) {
+    return (
+      <button
+        type="button"
+        className={`call-panel-btn ${duo.audioOutput === 'SPEAKER' ? 'is-on' : ''}`}
+        onClick={() =>
+          duo.setAudioOutput(duo.audioOutput === 'SPEAKER' ? 'EARPIECE' : 'SPEAKER')
+        }
+        title={`Switch output to ${duo.audioOutput === 'SPEAKER' ? 'Earpiece' : 'Speaker'}`}
+      >
+        <Volume2 size={size} /> {label}
+      </button>
+    );
+  }
+
+  return (
+    <span ref={wrapRef} className="call-speaker-wrap">
+      <button
+        type="button"
+        className="call-panel-btn is-on"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="Audio output"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <Volume2 size={size} /> {label}
+      </button>
+      {open && (
+        <span className="call-speaker-menu" role="menu">
+          {(['EARPIECE', 'SPEAKER', 'BLUETOOTH'] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              role="menuitemradio"
+              aria-checked={duo.audioOutput === mode}
+              className={`call-panel-btn ${duo.audioOutput === mode ? 'is-on' : ''}`}
+              onClick={() => {
+                duo.setAudioOutput(mode);
+                setOpen(false);
+              }}
+            >
+              {outputLabel(mode)}
+            </button>
+          ))}
+        </span>
+      )}
+    </span>
+  );
+}
 
 /**
  * Controls the other participant's microphone.
@@ -167,27 +244,7 @@ export function CallOrb() {
           <div className="call-option">
             <span className="call-option-label">Speaker</span>
             <div className="call-option-row mt-1">
-              <button
-                type="button"
-                className={`call-panel-btn ${duo.audioOutput === 'EARPIECE' ? 'is-on' : ''}`}
-                onClick={() => duo.setAudioOutput('EARPIECE')}
-              >
-                Earpiece
-              </button>
-              <button
-                type="button"
-                className={`call-panel-btn ${duo.audioOutput === 'SPEAKER' ? 'is-on' : ''}`}
-                onClick={() => duo.setAudioOutput('SPEAKER')}
-              >
-                Speaker
-              </button>
-              <button
-                type="button"
-                className={`call-panel-btn ${duo.audioOutput === 'BLUETOOTH' ? 'is-on' : ''}`}
-                onClick={() => duo.setAudioOutput('BLUETOOTH')}
-              >
-                Bluetooth
-              </button>
+              <SpeakerControl compact />
             </div>
           </div>
 
@@ -204,13 +261,6 @@ export function CallOrb() {
               <RemoteMicControl compact />
             </div>
           </div>
-
-          {duo.callMuted && (
-            <button type="button" className="call-option" onClick={duo.resumeListening}>
-              <span className="call-option-label">Unmute audio</span>
-              <span className="call-option-hint">Start hearing the session again</span>
-            </button>
-          )}
 
           {canRequest && (
             <button
@@ -294,41 +344,9 @@ export function CallPanel() {
           {duo.micMutedByPeer ? 'Mic disabled' : duo.micOn ? 'Mute mic' : 'Unmute mic'}
         </button>
 
-        <span className="call-panel-speaker" role="group" aria-label="Speaker output">
-          <button
-            type="button"
-            className={`call-panel-btn ${duo.audioOutput === 'EARPIECE' ? 'is-on' : ''}`}
-            onClick={() => duo.setAudioOutput('EARPIECE')}
-          >
-            Earpiece
-          </button>
-          <button
-            type="button"
-            className={`call-panel-btn ${duo.audioOutput === 'SPEAKER' ? 'is-on' : ''}`}
-            onClick={() => duo.setAudioOutput('SPEAKER')}
-          >
-            Speaker
-          </button>
-          <button
-            type="button"
-            className={`call-panel-btn ${duo.audioOutput === 'BLUETOOTH' ? 'is-on' : ''}`}
-            onClick={() => duo.setAudioOutput('BLUETOOTH')}
-          >
-            Bluetooth
-          </button>
-        </span>
+        <SpeakerControl />
 
         <RemoteMicControl />
-
-        {duo.callMuted && (
-          <button
-            type="button"
-            className="call-panel-btn is-on"
-            onClick={duo.resumeListening}
-          >
-            Unmute audio
-          </button>
-        )}
 
         {(duo.micMutedByPeer || duo.remoteSpeakerOn === false) && (
           <button

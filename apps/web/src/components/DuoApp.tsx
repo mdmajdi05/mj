@@ -17,6 +17,7 @@ import { RestoreScreen } from '@/components/RestoreScreen';
 import { SettingsScreen } from '@/components/SettingsScreen';
 import { AdminScreen } from '@/components/AdminScreen';
 import { IncomingCallBar, MicRequestBar } from '@/components/CallControls';
+import { ButterflyLayer } from '@/components/ButterflyLayer';
 import { Spinner } from '@/components/ui';
 
 export default function DuoApp({ hostMode = false }: { hostMode?: boolean }) {
@@ -96,6 +97,12 @@ function DuoShell({ hostMode }: { hostMode: boolean }) {
 
       <IncomingCallBar />
       <MicRequestBar />
+
+      <ButterflyLayer
+        ids={duo.butterflies}
+        onOpen={() => duo.navigate('CHAT')}
+        onDismiss={duo.dismissButterfly}
+      />
 
       <div className="toast-stack" aria-live="polite">
         {duo.error && (

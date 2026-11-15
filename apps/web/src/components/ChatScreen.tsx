@@ -46,6 +46,22 @@ export function ChatScreen() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const toolsRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!toolsOpen) return;
+    const handler = (event: Event) => {
+      if (toolsRef.current && !toolsRef.current.contains(event.target as Node)) {
+        setToolsOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', handler);
+    window.addEventListener('touchstart', handler);
+    return () => {
+      window.removeEventListener('mousedown', handler);
+      window.removeEventListener('touchstart', handler);
+    };
+  }, [toolsOpen]);
 
   const isHost = duo.user?.role === 'HOST';
 
@@ -261,7 +277,7 @@ export function ChatScreen() {
                 >
                   <X size={18} />
                 </button>
-                <div className="relative">
+                <div className="relative" ref={toolsRef}>
                   <button
                     className="icon-btn"
                     aria-label="Conversation options"

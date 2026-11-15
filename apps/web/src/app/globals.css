@@ -1437,12 +1437,31 @@ button:disabled {
   color: rgba(255, 255, 255, 0.6);
 }
 
-.call-panel-speaker {
+.call-speaker-wrap {
+  position: relative;
   display: inline-flex;
-  gap: 0.2rem;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 999px;
-  padding: 0.1rem;
+}
+
+.call-speaker-menu {
+  position: absolute;
+  bottom: calc(100% + 0.35rem);
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 8rem;
+  padding: 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #1b1626;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+}
+
+.call-speaker-menu .call-panel-btn {
+  width: 100%;
+  border-radius: 8px;
+  text-align: left;
 }
 
 .call-panel-btn {
