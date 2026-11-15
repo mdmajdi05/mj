@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
 import { ArrowLeft, ArrowRight, Gamepad2, GraduationCap, LogIn, UserPlus } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
 import { Button, Field } from '@/components/ui';
@@ -188,10 +187,6 @@ export function LoginScreen() {
             >
               {mode === 'login' ? 'Create one' : 'Log in'} <ArrowRight size={12} />
             </button>
-            <span>·</span>
-            <Link href="/host" className="text-sky-300 hover:text-sky-200">
-              Host access
-            </Link>
           </div>
         </form>
       </div>

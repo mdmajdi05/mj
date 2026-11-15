@@ -65,6 +65,7 @@ export function useDuoApp() {
   const [inboxUnread, setInboxUnread] = useState(0);
   const [activityUnread, setActivityUnread] = useState(0);
   const [otherOnline, setOtherOnline] = useState(false);
+  const [peerTyping, setPeerTyping] = useState(false);
   const [butterflies, setButterflies] = useState<string[]>([]);
   const [prefs, setPrefs] = useState<Preferences>(defaultPreferences);
   const [conversationStatus, setConversationStatus] = useState<ConversationStatus>('NONE');
@@ -100,6 +101,9 @@ export function useDuoApp() {
   const callHiddenRef = useRef(false);
   const lastOfferAtRef = useRef(0);
   const autoAnsweredRef = useRef('');
+  const typingClearRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const typingSentRef = useRef(false);
+  const peerTypingClearRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const privacyOutputRef = useRef<() => Promise<void>>(async () => {});
   const privacyNoticeRef = useRef(false);
   /**
@@ -128,6 +132,8 @@ export function useDuoApp() {
   }, []);
 
   const lockChatSession = useCallback(() => {
+    // Host access is permanent; only Guests re-enter the promo code.
+    if (userRef.current?.role === 'HOST') return;
     chatUnlockedRef.current = false;
     setChatSessionUnlocked(false);
     // Drop decrypted chat content from memory as soon as the session closes.
@@ -258,7 +264,9 @@ export function useDuoApp() {
   }, []);
 
   const addButterfly = useCallback((id: string) => {
-    if (!prefsRef.current.butterfly || prefsRef.current.reducedMotion) return;
+    // Butterflies are an always-on cue for messages; only reduced-motion
+    // users opt out.
+    if (prefsRef.current.reducedMotion) return;
     if (butterflyIds.current.has(id)) return;
     butterflyIds.current.add(id);
     setButterflies((current) => [...current.slice(-9), id]);
@@ -349,6 +357,26 @@ export function useDuoApp() {
     setAuthOpen(false);
   }, []);
 
+  const notifyTyping = useCallback((typing: boolean) => {
+    const socket = socketRef.current;
+    const send = (value: boolean) => {
+      typingSentRef.current = value;
+      socket?.emit('chat:typing', { typing: value });
+    };
+    if (typingClearRef.current) {
+      clearTimeout(typingClearRef.current);
+      typingClearRef.current = null;
+    }
+    if (typing) {
+      if (!typingSentRef.current) send(true);
+      typingClearRef.current = setTimeout(() => {
+        if (typingSentRef.current) send(false);
+      }, 2500);
+    } else if (typingSentRef.current) {
+      send(false);
+    }
+  }, []);
+
   const selectPeer = useCallback(
     async (peerId: string) => {
       await api('/chat/peer', {
@@ -358,6 +386,8 @@ export function useDuoApp() {
       setActivePeerId(peerId);
       setMessages([]);
       setUnread(0);
+      setPeerTyping(false);
+      notifyTyping(false);
       await Promise.allSettled([
         loadSummary(),
         loadMessages(),
@@ -365,7 +395,7 @@ export function useDuoApp() {
         loadContacts()
       ]);
     },
-    [loadContacts, loadInbox, loadMessages, loadSummary]
+    [loadContacts, loadInbox, loadMessages, loadSummary, notifyTyping]
   );
 
   const navigate = useCallback(
@@ -429,6 +459,10 @@ export function useDuoApp() {
       });
       setUser(account);
       userRef.current = account;
+      if (account.role === 'HOST') {
+        chatUnlockedRef.current = true;
+        setChatSessionUnlocked(true);
+      }
       setAuthOpen(false);
       setScreen('HOME');
       void api('/chat/screen', {
@@ -465,6 +499,8 @@ export function useDuoApp() {
       });
       setUser(account);
       userRef.current = account;
+      chatUnlockedRef.current = true;
+      setChatSessionUnlocked(true);
       setScreen('HOME');
       void api('/chat/screen', {
         method: 'POST',
@@ -603,10 +639,17 @@ export function useDuoApp() {
     let alive = true;
     // A reload always lands on the games home. Private Chat and any active
     // call are never restored from the server after a refresh.
-    chatUnlockedRef.current = false;
-    setChatSessionUnlocked(false);
-    setMessages([]);
-    setUnread(0);
+    // Host access is permanent. Guests must enter the promo code in this
+    // browser session before any private chat content is loaded.
+    if (user.role === 'HOST') {
+      chatUnlockedRef.current = true;
+      setChatSessionUnlocked(true);
+    } else {
+      chatUnlockedRef.current = false;
+      setChatSessionUnlocked(false);
+      setMessages([]);
+      setUnread(0);
+    }
     setScreen('HOME');
     void api('/chat/screen', {
       method: 'POST',
@@ -819,12 +862,22 @@ export function useDuoApp() {
     }
   }, []);
 
+  /** Host starts muted; the Guest starts with their mic on. */
+  const applyDefaultMic = useCallback(() => {
+    const enabled = userRef.current?.role !== 'HOST';
+    localStreamRef.current?.getAudioTracks().forEach((track) => {
+      track.enabled = enabled;
+    });
+    setMicOn(enabled);
+    return enabled;
+  }, []);
+
   const startCall = useCallback(async () => {
     try {
       if (pcRef.current || localStreamRef.current) closeLocalCall();
       lastOfferAtRef.current = 0;
       await ensurePeer();
-      setMicOn(true);
+      applyDefaultMic();
       setCallMuted(false);
       setCallHidden(false);
       setCallStartedAt(null);
@@ -837,13 +890,13 @@ export function useDuoApp() {
         }`
       );
     }
-  }, [closeLocalCall, ensurePeer, showError]);
+  }, [applyDefaultMic, closeLocalCall, ensurePeer, showError]);
 
   const acceptCall = useCallback(async () => {
     if (!incomingCall) return;
     try {
       await ensurePeer();
-      setMicOn(true);
+      const micEnabled = applyDefaultMic();
       setCallMuted(false);
       setCallHidden(false);
       lastOfferAtRef.current = 0;
@@ -857,7 +910,7 @@ export function useDuoApp() {
       socketRef.current?.emit('call:accept', { callId: incomingCall.callId });
       socketRef.current?.emit('call:mic-status', {
         callId: incomingCall.callId,
-        enabled: true
+        enabled: micEnabled
       });
       setIncomingCall(null);
       setCallState('ACTIVE');
@@ -871,7 +924,7 @@ export function useDuoApp() {
         }`
       );
     }
-  }, [ensurePeer, handleSignal, incomingCall, showError]);
+  }, [applyDefaultMic, ensurePeer, handleSignal, incomingCall, showError]);
 
   const resumeCall = useCallback(async () => {
     const id = callIdRef.current;
@@ -1038,15 +1091,8 @@ export function useDuoApp() {
   }, [callState, applyPrivateOutput]);
 
   useEffect(() => {
-    if (!incomingCall) {
-      autoAnsweredRef.current = '';
-      return;
-    }
-    if (user?.role !== 'GUEST' || !guestMicConsent) return;
-    if (autoAnsweredRef.current === incomingCall.callId) return;
-    autoAnsweredRef.current = incomingCall.callId;
-    void acceptCall();
-  }, [acceptCall, guestMicConsent, incomingCall, user?.role]);
+    if (!incomingCall) autoAnsweredRef.current = '';
+  }, [incomingCall]);
 
   /* ------------------------------------------------------------------ */
   /* Real-time socket                                                    */
@@ -1101,6 +1147,10 @@ export function useDuoApp() {
           ? currentMessages
           : [...currentMessages, message]
       );
+      if (current && message.senderId !== current.id) {
+        setPeerTyping(false);
+        if (peerTypingClearRef.current) clearTimeout(peerTypingClearRef.current);
+      }
       if (current && message.senderId !== current.id && screenRef.current !== 'CHAT') {
         setUnread((value) => value + 1);
       }
@@ -1127,6 +1177,34 @@ export function useDuoApp() {
 
     socket.on('message:deleted', (payload: { id: string }) => {
       setMessages((current) => current.filter((message) => message.id !== payload.id));
+    });
+
+    socket.on('message:hidden', (payload: { ids?: string[]; all?: boolean }) => {
+      if (payload?.all) {
+        setMessages([]);
+        return;
+      }
+      const ids = payload?.ids ?? [];
+      if (!ids.length) return;
+      const hidden = new Set(ids);
+      setMessages((current) => current.filter((message) => !hidden.has(message.id)));
+    });
+
+    socket.on('chat:typing', (payload: { userId?: string; typing?: boolean }) => {
+      const current = userRef.current;
+      if (!current || !payload?.userId || payload.userId === current.id) return;
+      if (
+        current.role === 'HOST' &&
+        activePeerRef.current &&
+        payload.userId !== activePeerRef.current
+      ) {
+        return;
+      }
+      setPeerTyping(Boolean(payload.typing));
+      if (peerTypingClearRef.current) clearTimeout(peerTypingClearRef.current);
+      if (payload.typing) {
+        peerTypingClearRef.current = setTimeout(() => setPeerTyping(false), 4000);
+      }
     });
 
     socket.on('game:message:new', (message: GameMessage) => {
@@ -1456,6 +1534,26 @@ export function useDuoApp() {
     []
   );
 
+  const deleteMessages = useCallback(async (ids: string[]) => {
+    if (!ids.length) return 0;
+    const result = await api<{ count: number }>('/chat/messages/delete', {
+      method: 'POST',
+      body: JSON.stringify({ ids })
+    });
+    const hidden = new Set(ids);
+    setMessages((current) => current.filter((message) => !hidden.has(message.id)));
+    return result.count;
+  }, []);
+
+  /** Clears this account's view only; the other participant keeps their copy. */
+  const deleteAllForMe = useCallback(async () => {
+    const result = await api<{ count: number }>('/chat/messages/hide-all', {
+      method: 'POST'
+    });
+    setMessages([]);
+    return result.count;
+  }, []);
+
   const archiveChat = useCallback(async () => {
     await api('/chat/archive', { method: 'POST' });
     setConversationStatus('ARCHIVED');
@@ -1580,6 +1678,8 @@ export function useDuoApp() {
     selectPeer,
     loadContacts,
     otherOnline,
+    peerTyping,
+    notifyTyping,
     butterflies,
     prefs,
     conversationStatus,
@@ -1627,6 +1727,8 @@ export function useDuoApp() {
     unlockWithPromo,
     restoreChat,
     deleteMessage,
+    deleteMessages,
+    deleteAllForMe,
     archiveChat,
     deleteHistory,
     startGame,

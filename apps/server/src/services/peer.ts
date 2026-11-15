@@ -113,7 +113,8 @@ export async function contactsFor(userId: string, onlineIds: string[]): Promise<
                 senderId: { not: me.id },
                 destination: 'CHAT',
                 readAt: null,
-                deletedAt: null
+                deletedAt: null,
+                hides: { none: { userId: me.id } }
               }
             })
           : 0

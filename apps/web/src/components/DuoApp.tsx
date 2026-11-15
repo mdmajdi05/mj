@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect } from 'react';
 import { AlertTriangle, CheckCircle2, X } from 'lucide-react';
 import { DuoContext, useDuo, useDuoApp } from '@/hooks/useDuoApp';
 import { LoginScreen } from '@/components/LoginScreen';
@@ -15,6 +16,7 @@ import { PromoScreen } from '@/components/PromoScreen';
 import { RestoreScreen } from '@/components/RestoreScreen';
 import { SettingsScreen } from '@/components/SettingsScreen';
 import { AdminScreen } from '@/components/AdminScreen';
+import { IncomingCallBar } from '@/components/CallControls';
 import { Spinner } from '@/components/ui';
 
 export default function DuoApp({ hostMode = false }: { hostMode?: boolean }) {
@@ -28,6 +30,25 @@ export default function DuoApp({ hostMode = false }: { hostMode?: boolean }) {
 
 function DuoShell({ hostMode }: { hostMode: boolean }) {
   const duo = useDuo();
+
+  // Track the visual viewport so the chat frame shrinks when the mobile
+  // keyboard opens instead of pushing the composer off-screen.
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const apply = () => {
+      const height = viewport?.height ?? window.innerHeight;
+      document.documentElement.style.setProperty('--app-height', `${Math.round(height)}px`);
+    };
+    apply();
+    window.addEventListener('resize', apply);
+    viewport?.addEventListener('resize', apply);
+    viewport?.addEventListener('scroll', apply);
+    return () => {
+      window.removeEventListener('resize', apply);
+      viewport?.removeEventListener('resize', apply);
+      viewport?.removeEventListener('scroll', apply);
+    };
+  }, []);
 
   if (duo.booting) {
     return (
@@ -44,12 +65,18 @@ function DuoShell({ hostMode }: { hostMode: boolean }) {
   // Visitors can browse the games. Any account action opens the auth screen.
   if (!duo.user && duo.authOpen) return <LoginScreen />;
 
+  const immersive = duo.screen === 'CHAT' || duo.screen === 'STUDY';
+
   return (
     <div className="shell">
-      <div className="mx-auto min-h-screen w-full max-w-3xl px-3 pb-10 pt-2 md:px-6">
+      <div
+        className={`mx-auto w-full max-w-3xl px-3 pt-2 md:px-6 ${
+          immersive ? 'app-frame-chat' : 'min-h-screen pb-10'
+        }`}
+      >
         <AppHeader />
 
-        <main className="min-w-0">
+        <main className={`min-w-0 ${immersive ? 'app-main-chat' : ''}`}>
           {duo.screen === 'HOME' && <HomeScreen />}
           {duo.screen === 'CHAT' && <ChatScreen />}
           {duo.screen === 'STUDY' && <StudyScreen />}
@@ -66,6 +93,8 @@ function DuoShell({ hostMode }: { hostMode: boolean }) {
 
       {/* Remote WebRTC audio only. No audio or message content is rendered. */}
       <audio ref={duo.remoteAudioRef} autoPlay playsInline className="hidden" />
+
+      <IncomingCallBar />
 
       <div className="toast-stack" aria-live="polite">
         {duo.error && (

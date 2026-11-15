@@ -173,6 +173,16 @@ export function registerChatSocketHandlers(io: Server, socket: Socket) {
     }
   });
 
+  socket.on('chat:typing', async (payload: { typing?: boolean }) => {
+    const other = await otherUser(user.id);
+    if (!other) return;
+    emitToUser(other.id, 'chat:typing', {
+      userId: user.id,
+      displayName: user.displayName,
+      typing: Boolean(payload?.typing)
+    });
+  });
+
   socket.on('chat:hide', async () => {
     await setScreen(user.id, 'STUDY', false);
     socket.emit('chat:state', { screen: 'STUDY', visible: false });

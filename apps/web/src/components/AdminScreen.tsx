@@ -473,7 +473,7 @@ export function AdminScreen() {
                 className="w-full"
                 value={promoCode}
                 onChange={(event) => setPromoCode(event.target.value)}
-                placeholder="New code (6–100 characters)"
+                placeholder="New code (4–100 characters)"
                 autoComplete="off"
               />
               <Button variant="primary" onClick={() => void rotatePromo()} disabled={busy === 'promo'}>

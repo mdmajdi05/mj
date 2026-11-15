@@ -101,7 +101,8 @@ export async function getConversationSummary(userId: string): Promise<Conversati
           destination: MessageDestination.CHAT,
           senderId: { not: userId },
           readAt: null,
-          deletedAt: null
+          deletedAt: null,
+          hides: { none: { userId } }
         }
       })
     : 0;

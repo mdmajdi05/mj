@@ -182,7 +182,12 @@ chatRouter.get(
       ? MessageDestination.GAME
       : MessageDestination.CHAT;
     const rows = await prisma.message.findMany({
-      where: { conversationId: conversation.id, destination, deletedAt: null },
+      where: {
+        conversationId: conversation.id,
+        destination,
+        deletedAt: null,
+        hides: { none: { userId: req.user!.id } }
+      },
       orderBy: { createdAt: 'asc' },
       take: 500,
       include: { sender: { select: { username: true, role: true, displayName: true } } }
@@ -259,24 +264,87 @@ chatRouter.delete(
   asyncHandler(async (req: AuthRequest, res) => {
     const message = await prisma.message.findUnique({ where: { id: req.params.id } });
     if (!message || message.deletedAt) throw new HttpError(404, 'Message not found');
-    if (req.user!.role !== Role.HOST && message.senderId !== req.user!.id) {
-      throw new HttpError(403, 'You can delete only your own messages');
+
+    const conversation = await findConversationFor(req.user!.id);
+    if (!conversation || conversation.id !== message.conversationId) {
+      throw new HttpError(404, 'Message not found');
     }
 
-    await prisma.message.update({
-      where: { id: message.id },
-      data: { deletedAt: new Date(), content: '[deleted]' }
+    // Hiding is per account: the other participant keeps their copy.
+    await prisma.messageHide.upsert({
+      where: { messageId_userId: { messageId: message.id, userId: req.user!.id } },
+      create: { messageId: message.id, userId: req.user!.id },
+      update: {}
     });
 
     if (req.user!.role === Role.HOST) {
-      await audit(req.user!.id, 'DELETE_MESSAGE', message.id);
+      await audit(req.user!.id, 'HIDE_MESSAGE', message.id);
     }
 
-    const other = await otherUser(req.user!.id);
-    for (const id of [req.user!.id, other.id]) {
-      emitToUser(id, 'message:deleted', { id: message.id });
-    }
+    emitToUser(req.user!.id, 'message:hidden', { ids: [message.id] });
     res.status(204).end();
+  })
+);
+
+chatRouter.post(
+  '/messages/delete',
+  requireChatUnlock,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({ ids: z.array(z.string().min(1)).min(1).max(500) })
+      .safeParse(req.body);
+    if (!parsed.success) throw new HttpError(400, 'Select at least one message');
+
+    const conversation = await findConversationFor(req.user!.id);
+    if (!conversation) throw new HttpError(404, 'Conversation not found');
+
+    const rows = await prisma.message.findMany({
+      where: {
+        id: { in: parsed.data.ids },
+        conversationId: conversation.id,
+        deletedAt: null
+      },
+      select: { id: true }
+    });
+    if (rows.length) {
+      await prisma.messageHide.createMany({
+        data: rows.map((row) => ({ messageId: row.id, userId: req.user!.id })),
+        skipDuplicates: true
+      });
+    }
+    const ids = rows.map((row) => row.id);
+    emitToUser(req.user!.id, 'message:hidden', { ids });
+    res.json({ ok: true, count: ids.length, ids });
+  })
+);
+
+chatRouter.post(
+  '/messages/hide-all',
+  requireChatUnlock,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const conversation = await findConversationFor(req.user!.id);
+    if (!conversation) {
+      res.json({ ok: true, count: 0 });
+      return;
+    }
+
+    const rows = await prisma.message.findMany({
+      where: {
+        conversationId: conversation.id,
+        destination: MessageDestination.CHAT,
+        deletedAt: null,
+        hides: { none: { userId: req.user!.id } }
+      },
+      select: { id: true }
+    });
+    if (rows.length) {
+      await prisma.messageHide.createMany({
+        data: rows.map((row) => ({ messageId: row.id, userId: req.user!.id })),
+        skipDuplicates: true
+      });
+    }
+    emitToUser(req.user!.id, 'message:hidden', { all: true });
+    res.json({ ok: true, count: rows.length });
   })
 );
 
@@ -778,8 +846,8 @@ chatRouter.post(
   requireHost,
   asyncHandler(async (req: AuthRequest, res) => {
     const code = String(req.body?.code ?? '').trim();
-    if (code.length < 6 || code.length > 100) {
-      throw new HttpError(400, 'Code must be 6–100 characters');
+    if (code.length < 4 || code.length > 100) {
+      throw new HttpError(400, 'Code must be 4–100 characters');
     }
     await prisma.accessCode.updateMany({
       where: { purpose: 'PROMO' },

@@ -43,27 +43,23 @@ export async function notifyUser(input: NotifyInput) {
   ioRef?.to(`user:${input.userId}`).emit('notification:new', safe);
 
   if (input.butterfly) {
-    const preference = await prisma.notificationPreference.findUnique({
-      where: { userId: input.userId }
-    });
-    if (preference?.butterfly !== false) {
-      let allowed = true;
-      if (input.dedupeKey) {
-        try {
-          await prisma.butterflyNotificationEvent.create({
-            data: { userId: input.userId, dedupeKey: input.dedupeKey }
-          });
-        } catch {
-          allowed = false; // unique constraint: duplicate event
-        }
-      }
-      if (allowed) {
-        ioRef?.to(`user:${input.userId}`).emit('notification:butterfly', {
-          id: notification.id,
-          eventType: notification.eventType,
-          createdAt: notification.createdAt
+    // Butterflies are a required, always-on cue for incoming messages.
+    let allowed = true;
+    if (input.dedupeKey) {
+      try {
+        await prisma.butterflyNotificationEvent.create({
+          data: { userId: input.userId, dedupeKey: input.dedupeKey }
         });
+      } catch {
+        allowed = false; // unique constraint: duplicate event
       }
+    }
+    if (allowed) {
+      ioRef?.to(`user:${input.userId}`).emit('notification:butterfly', {
+        id: notification.id,
+        eventType: notification.eventType,
+        createdAt: notification.createdAt
+      });
     }
   }
 

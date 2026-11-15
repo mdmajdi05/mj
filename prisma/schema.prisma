@@ -50,6 +50,7 @@ model User {
   grantedPermissions  Permission[]     @relation("PermissionGranter")
   callParticipants   CallParticipant[]
   pushSubscriptions  PushSubscription[]
+  messageHides       MessageHide[]
 }
 model Session {
   id        String   @id @default(cuid())
@@ -83,8 +84,22 @@ model Message {
   deliveredAt    DateTime?
   readAt         DateTime?
   deletedAt      DateTime?
+  hides          MessageHide[]
   @@index([conversationId, createdAt])
   @@index([destination, createdAt])
+}
+
+/// Per-account visibility. Hiding a message removes it from that account's
+/// list only; the other participant keeps their copy until they hide it.
+model MessageHide {
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  @@unique([messageId, userId])
+  @@index([userId])
 }
 model Game {
   id       String        @id @default(cuid())
