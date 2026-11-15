@@ -1,26 +1,27 @@
 'use client';
 
 import { useState } from 'react';
-import { Heart, LockKeyhole, ShieldCheck } from 'lucide-react';
+import Link from 'next/link';
+import { ArrowRight, Gamepad2, GraduationCap } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
 import { Button, Field } from '@/components/ui';
 
 export function LoginScreen() {
-  const { login } = useDuo();
-  const [account, setAccount] = useState<'host' | 'guest'>('guest');
-  const [password, setPassword] = useState('');
+  const { loginGuest } = useDuo();
+  const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [loginError, setLoginError] = useState('');
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (!name.trim()) return;
     setBusy(true);
     setLoginError('');
     try {
-      await login(account, password);
-      setPassword('');
+      await loginGuest(name.trim());
+      setName('');
     } catch (cause) {
-      setLoginError(cause instanceof Error ? cause.message : 'Login failed');
+      setLoginError(cause instanceof Error ? cause.message : 'Could not start');
     } finally {
       setBusy(false);
     }
@@ -30,27 +31,26 @@ export function LoginScreen() {
     <main className="login-shell">
       <div className="login-glow login-glow-one" />
       <div className="login-glow login-glow-two" />
-      <div className="relative z-10 grid w-full max-w-5xl items-center gap-10 lg:grid-cols-[1.05fr_.95fr]">
+      <div className="relative z-10 grid w-full max-w-4xl items-center gap-10 lg:grid-cols-[1.05fr_.95fr]">
         <section className="hidden lg:block">
           <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-[#d8cfe8]">
-            <Heart size={14} className="text-pink-300" />
-            A private space for exactly two people
+            <GraduationCap size={14} className="text-sky-300" />
+            Study, focus and play
           </div>
           <h1 className="max-w-xl text-5xl font-semibold leading-[1.05] tracking-tight">
-            Your little universe,{' '}
-            <span className="bg-gradient-to-r from-fuchsia-300 via-purple-300 to-sky-300 bg-clip-text text-transparent">
-              just for two.
+            Study smarter.{' '}
+            <span className="bg-gradient-to-r from-sky-300 via-purple-300 to-fuchsia-300 bg-clip-text text-transparent">
+              Play better.
             </span>
           </h1>
           <p className="muted mt-5 max-w-lg text-base leading-7">
-            Chat privately, switch into a focused Study Assistant, play quick games and
-            call each other — without a public profile or a noisy feed.
+            A calm place for study sessions, quick brain breaks and a growing arcade of games.
           </p>
           <div className="mt-8 grid gap-3 sm:grid-cols-3">
             {[
-              ['Private chat', 'Real-time, persistent and seen receipts.'],
-              ['Study mode', 'One quiet place to focus together.'],
-              ['Butterfly alerts', 'A discreet signal, never a message preview.']
+              ['Study Assistant', 'Ask questions and revise at your own pace.'],
+              ['Game arcade', 'Racing, puzzles, bubbles, snake and more.'],
+              ['Focus mode', 'A quiet layout with nothing extra in the way.']
             ].map(([title, description]) => (
               <div className="panel-soft p-4" key={title}>
                 <p className="text-sm font-semibold">{title}</p>
@@ -66,9 +66,9 @@ export function LoginScreen() {
               <svg viewBox="0 0 64 56" className="h-9 w-9" aria-hidden="true">
                 <defs>
                   <linearGradient id="login-wing" x1="0" x2="1" y1="0" y2="1">
-                    <stop offset="0%" stopColor="#c084fc" />
-                    <stop offset="55%" stopColor="#e879f9" />
-                    <stop offset="100%" stopColor="#60a5fa" />
+                    <stop offset="0%" stopColor="#7dd3fc" />
+                    <stop offset="55%" stopColor="#c084fc" />
+                    <stop offset="100%" stopColor="#f472b6" />
                   </linearGradient>
                 </defs>
                 <path
@@ -78,34 +78,18 @@ export function LoginScreen() {
                 <ellipse cx="32" cy="29" rx="2.4" ry="10" fill="#f5d0fe" />
               </svg>
             </div>
-            <h2 className="mt-4 text-2xl font-semibold tracking-tight">Private Duo</h2>
-            <p className="muted mt-1 text-sm">Sign in to your private space</p>
-          </div>
-
-          <div className="mb-4 grid grid-cols-2 gap-2 rounded-xl border border-white/10 bg-black/20 p-1">
-            {(['guest', 'host'] as const).map((value) => (
-              <button
-                type="button"
-                key={value}
-                onClick={() => setAccount(value)}
-                className={`rounded-lg px-3 py-2 text-sm font-medium transition ${
-                  account === value
-                    ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-lg'
-                    : 'text-[#b9b0c8] hover:text-white'
-                }`}
-              >
-                {value === 'host' ? 'Host / Admin' : 'Guest'}
-              </button>
-            ))}
+            <h2 className="mt-4 text-2xl font-semibold tracking-tight">Study with Game</h2>
+            <p className="muted mt-1 text-sm">Enter your name to continue</p>
           </div>
 
           <Field
-            label="Password"
-            type="password"
-            autoComplete="current-password"
-            placeholder="Enter your private password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
+            label="Your name"
+            type="text"
+            autoComplete="nickname"
+            placeholder="Type your name"
+            maxLength={40}
+            value={name}
+            onChange={(event) => setName(event.target.value)}
             required
           />
 
@@ -115,17 +99,16 @@ export function LoginScreen() {
             </p>
           )}
 
-          <Button variant="primary" className="mt-5 w-full" disabled={busy}>
-            <LockKeyhole size={17} />
-            {busy ? 'Signing in…' : 'Secure login'}
+          <Button variant="primary" className="mt-5 w-full" disabled={busy || !name.trim()}>
+            <Gamepad2 size={17} />
+            {busy ? 'Opening…' : 'Start playing'}
           </Button>
 
-          <div className="muted mt-5 flex items-start justify-center gap-2 text-center text-xs leading-5">
-            <ShieldCheck size={15} className="mt-0.5 shrink-0 text-emerald-300" />
-            <span>
-              Only two pre-created accounts. No public registration. Sessions are HttpOnly and
-              expire automatically.
-            </span>
+          <div className="muted mt-5 flex items-center justify-center gap-2 text-center text-xs leading-5">
+            <span>No account needed.</span>
+            <Link href="/host" className="inline-flex items-center gap-1 text-sky-300 hover:text-sky-200">
+              Host access <ArrowRight size={12} />
+            </Link>
           </div>
         </form>
       </div>

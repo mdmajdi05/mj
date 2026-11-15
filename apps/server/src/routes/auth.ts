@@ -30,6 +30,14 @@ const loginSchema = z.object({
   password: z.string().min(1).max(200)
 });
 
+const guestNameSchema = z.object({
+  name: z.string().trim().min(1, 'Enter your name').max(40, 'Name is too long')
+});
+
+const hostPasswordSchema = z.object({
+  password: z.string().min(1, 'Enter the host password')
+});
+
 // HTTPS is the production default. COOKIE_SECURE=false is only used by the
 // deploy script when certificate issuance failed and the site is temporarily
 // served over plain HTTP.
@@ -81,6 +89,90 @@ authRouter.post(
   })
 );
 
+authRouter.post(
+  '/guest',
+  loginLimit,
+  asyncHandler(async (req, res) => {
+    const parsed = guestNameSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'Enter your name' });
+      return;
+    }
+
+    const name = parsed.data.name;
+    if (name.toLowerCase() === 'host') {
+      res.status(400).json({ error: 'Choose a different name.' });
+      return;
+    }
+
+    let guest = await prisma.user.findFirst({
+      where: { role: Role.GUEST },
+      orderBy: { createdAt: 'asc' }
+    });
+
+    if (!guest) {
+      guest = await prisma.user.create({
+        data: {
+          username: name,
+          role: Role.GUEST,
+          passwordHash: await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 12)
+        }
+      });
+    } else {
+      const conflict = await prisma.user.findUnique({ where: { username: name } });
+      if (conflict && conflict.id !== guest.id) {
+        res.status(409).json({ error: 'That name is already in use.' });
+        return;
+      }
+      if (guest.username !== name) {
+        guest = await prisma.user.update({
+          where: { id: guest.id },
+          data: { username: name }
+        });
+      }
+    }
+
+    await prisma.notificationPreference
+      .createMany({ data: [{ userId: guest.id }], skipDuplicates: true })
+      .catch(() => undefined);
+    await prisma.userPreference
+      .createMany({ data: [{ userId: guest.id }], skipDuplicates: true })
+      .catch(() => undefined);
+    await prisma.screenPreference
+      .createMany({
+        data: [{ userId: guest.id, screen: 'HOME', chatVisible: true }],
+        skipDuplicates: true
+      })
+      .catch(() => undefined);
+
+    const token = await issueSession(guest.id);
+    res.cookie('duo_session', token, cookieOptions());
+    res.json(clientSafeUser(guest));
+  })
+);
+
+authRouter.post(
+  '/host',
+  loginLimit,
+  asyncHandler(async (req, res) => {
+    const parsed = hostPasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'Enter the host password' });
+      return;
+    }
+
+    const host = await prisma.user.findFirst({ where: { role: Role.HOST } });
+    if (!host || !(await bcrypt.compare(parsed.data.password, host.passwordHash))) {
+      res.status(401).json({ error: 'Incorrect password' });
+      return;
+    }
+
+    const token = await issueSession(host.id);
+    res.cookie('duo_session', token, cookieOptions());
+    res.json(clientSafeUser(host));
+  })
+);
+
 authRouter.get(
   '/me',
   requireAuth,
@@ -96,11 +188,8 @@ authRouter.post(
   asyncHandler(async (req: AuthRequest, res) => {
     const parsed = z
       .object({
-        currentPassword: z.string().min(1).max(200),
-        newPassword: z
-          .string()
-          .min(10, 'New password must be at least 10 characters.')
-          .max(200)
+        currentPassword: z.string().min(1),
+        newPassword: z.string().min(1, 'Enter a new password')
       })
       .safeParse(req.body);
 

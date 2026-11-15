@@ -109,7 +109,7 @@ export function AdminScreen() {
   }
 
   async function deleteAllGameMessages() {
-    if (!window.confirm('Delete every Game Inbox message permanently? This cannot be undone.')) {
+    if (!window.confirm('Delete every Game Chat message permanently? This cannot be undone.')) {
       return;
     }
     setBusy('game-history');
@@ -117,7 +117,7 @@ export function AdminScreen() {
       await api('/chat/admin/game-messages', { method: 'DELETE' });
       await refresh(search);
       await duo.loadInbox();
-      duo.setNotice('All Game Inbox messages were deleted.');
+      duo.setNotice('All Game Chat messages were deleted.');
     } catch (cause) {
       duo.setError(cause instanceof Error ? cause.message : 'Delete failed');
     } finally {
@@ -313,7 +313,7 @@ export function AdminScreen() {
                 <p className="eyebrow">Destructive authority</p>
                 <h3 className="mt-1 text-lg font-semibold">Conversation history</h3>
                 <p className="muted mt-1 text-sm">
-                  Permanently delete every private Chat message. Audit records are kept without
+                  Permanently delete every Chat message. Audit records are kept without
                   message content, and RESTORE cannot recover deleted data.
                 </p>
               </div>
@@ -392,7 +392,7 @@ export function AdminScreen() {
         <Panel className="p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="eyebrow">Game Inbox</p>
+              <p className="eyebrow">Game Chat</p>
               <h3 className="mt-1 text-lg font-semibold">Game messages</h3>
             </div>
             <Button
@@ -609,7 +609,7 @@ export function AdminScreen() {
         }}
       >
         <p className="muted text-sm leading-6">
-          This permanently deletes every private Chat message. It cannot be undone and RESTORE can
+          This permanently deletes every Chat message. It cannot be undone and RESTORE can
           never bring it back. An audit record will say the history was deleted, without keeping
           message content.
         </p>

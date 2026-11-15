@@ -1,11 +1,20 @@
 'use client';
 
 import { useCallback, useState } from 'react';
-import { ArrowLeft, Inbox, LockKeyhole, Send, ToggleLeft, ToggleRight } from 'lucide-react';
+import { ArrowLeft, Inbox, Send, ToggleLeft, ToggleRight } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
 import { WordTypingGame } from '@/components/games/WordTypingGame';
 import { FallingWordsGame } from '@/components/games/FallingWordsGame';
 import { ColorSequenceGame } from '@/components/games/ColorSequenceGame';
+import { TurboTrackGame } from '@/components/games/TurboTrackGame';
+import { BubblePopGame } from '@/components/games/BubblePopGame';
+import { SnakeGame } from '@/components/games/SnakeGame';
+import { SlidePuzzleGame } from '@/components/games/SlidePuzzleGame';
+import { PairMatchGame } from '@/components/games/PairMatchGame';
+import { TicTacToeGame } from '@/components/games/TicTacToeGame';
+import { WhackAMoleGame } from '@/components/games/WhackAMoleGame';
+import { BrickBreakerGame } from '@/components/games/BrickBreakerGame';
+import { MathSprintGame } from '@/components/games/MathSprintGame';
 import { Badge, Button, Panel } from '@/components/ui';
 
 export function GameScreen() {
@@ -13,6 +22,10 @@ export function GameScreen() {
   const [sendToGame, setSendToGame] = useState(true);
   const [draft, setDraft] = useState('');
   const [lastScore, setLastScore] = useState(0);
+  // Main Chat is only offered when the session can use it. Outsiders just see
+  // Game Chat, which looks like a normal in-game message thread.
+  const showMainChat = duo.chatSessionUnlocked;
+  const gameChat = sendToGame || !showMainChat;
 
   const updateGameScore = duo.updateGameScore;
   const handleScore = useCallback(
@@ -25,12 +38,10 @@ export function GameScreen() {
 
   function send() {
     if (!draft.trim()) return;
-    const destination = sendToGame ? 'GAME' : 'CHAT';
+    const destination = gameChat ? 'GAME' : 'CHAT';
     if (duo.sendMessage(draft, destination)) {
       setDraft('');
-      duo.setNotice(
-        sendToGame ? 'Message sent to the Game Inbox.' : 'Message sent to normal private Chat.'
-      );
+      duo.setNotice(gameChat ? 'Sent to Game Chat.' : 'Sent to Main Chat.');
     }
   }
 
@@ -57,16 +68,16 @@ export function GameScreen() {
           </button>
           <p className="eyebrow">Game session</p>
           <h1 className="mt-1 text-2xl font-semibold capitalize">
-            {duo.activeGame.replace('-', ' ')}
+            {duo.activeGame.replaceAll('-', ' ')}
           </h1>
         </div>
         <div className="flex items-center gap-2">
-          <Badge tone={sendToGame ? 'warn' : 'accent'}>
-            {sendToGame ? 'Destination: Game Inbox' : 'Destination: Private Chat'}
+          <Badge tone={gameChat ? 'warn' : 'accent'}>
+            {gameChat ? 'Chat: Game Chat' : 'Chat: Main Chat'}
           </Badge>
           <Button onClick={() => duo.navigate('INBOX')}>
             <Inbox size={15} />
-            Inbox
+            Chat
             {duo.inboxUnread > 0 && (
               <span className="rounded-full bg-pink-500 px-1.5 text-[10px]">{duo.inboxUnread}</span>
             )}
@@ -77,30 +88,41 @@ export function GameScreen() {
       {duo.activeGame === 'word-typing' && <WordTypingGame onScore={handleScore} />}
       {duo.activeGame === 'falling-words' && <FallingWordsGame onScore={handleScore} />}
       {duo.activeGame === 'memory-match' && <ColorSequenceGame onScore={handleScore} />}
+      {duo.activeGame === 'turbo-track' && <TurboTrackGame onScore={handleScore} />}
+      {duo.activeGame === 'bubble-pop' && <BubblePopGame onScore={handleScore} />}
+      {duo.activeGame === 'snake-classic' && <SnakeGame onScore={handleScore} />}
+      {duo.activeGame === 'slide-puzzle' && <SlidePuzzleGame onScore={handleScore} />}
+      {duo.activeGame === 'pair-match' && <PairMatchGame onScore={handleScore} />}
+      {duo.activeGame === 'tic-tac-toe' && <TicTacToeGame onScore={handleScore} />}
+      {duo.activeGame === 'whack-a-mole' && <WhackAMoleGame onScore={handleScore} />}
+      {duo.activeGame === 'brick-breaker' && <BrickBreakerGame onScore={handleScore} />}
+      {duo.activeGame === 'math-sprint' && <MathSprintGame onScore={handleScore} />}
 
       <Panel className="mt-4 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="flex items-center gap-2 text-sm font-semibold">
-              {sendToGame ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
-              SEND-TO-GAME
+              {gameChat ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
+              GAME CHAT
             </p>
             <p className="muted mt-1 text-xs leading-5">
-              ON sends from this game screen to the receiver&apos;s Incoming Game Messages. OFF
-              sends to normal private Chat.
+              Game Chat keeps your in-game messages together with this session.
+              {showMainChat ? ' Turn it off to send to Main Chat instead.' : ''}
             </p>
           </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={sendToGame}
-            aria-label="Toggle send to game"
-            className={`send-toggle ${sendToGame ? 'send-toggle-on' : ''}`}
-            onClick={() => setSendToGame((value) => !value)}
-          >
-            <span />
-            {sendToGame ? 'ON · Game Inbox' : 'OFF · Private Chat'}
-          </button>
+          {showMainChat && (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={sendToGame}
+              aria-label="Toggle game chat"
+              className={`send-toggle ${sendToGame ? 'send-toggle-on' : ''}`}
+              onClick={() => setSendToGame((value) => !value)}
+            >
+              <span />
+              {sendToGame ? 'ON · Game Chat' : 'OFF · Main Chat'}
+            </button>
+          )}
         </div>
 
         <div className="mt-3 flex gap-2">
@@ -113,21 +135,13 @@ export function GameScreen() {
             }}
             maxLength={5000}
             placeholder={
-              sendToGame ? 'Send a message to the Game Inbox…' : 'Send to normal private Chat…'
+              gameChat ? 'Send a message to Game Chat…' : 'Send a message to Main Chat…'
             }
           />
           <Button variant="primary" onClick={send}>
             <Send size={16} />
           </Button>
         </div>
-
-        {!sendToGame && !duo.chatSessionUnlocked && (
-          <p className="mt-2 flex items-center gap-2 text-xs text-amber-200">
-            <LockKeyhole size={13} />
-            Private Chat is hidden. Enter the secret code from your profile, or switch SEND-TO-GAME
-            ON.
-          </p>
-        )}
       </Panel>
     </>
   );

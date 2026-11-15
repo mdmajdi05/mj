@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { ArrowLeft, LockKeyhole, ShieldCheck, Ticket } from 'lucide-react';
+import { ArrowLeft, KeyRound, Ticket } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
 import { Button } from '@/components/ui';
 
@@ -20,7 +20,7 @@ export function PromoScreen() {
       await duo.unlockWithPromo(code.trim());
       setCode('');
     } catch (cause) {
-      setLocalError(cause instanceof Error ? cause.message : 'Access code could not be validated');
+      setLocalError(cause instanceof Error ? cause.message : 'Code could not be validated');
     } finally {
       setBusy(false);
     }
@@ -39,14 +39,13 @@ export function PromoScreen() {
         <div className="coupon">
           <div className="coupon-stub">
             <Ticket size={28} />
-            <span>PRIVATE DUO</span>
+            <span>STUDY WITH GAME</span>
           </div>
           <div className="coupon-body">
-            <p className="eyebrow">Private access</p>
-            <h1 className="mt-2 text-2xl font-semibold tracking-tight">Enter Secret Code</h1>
+            <p className="eyebrow">Access</p>
+            <h1 className="mt-2 text-2xl font-semibold tracking-tight">Enter Code</h1>
             <p className="muted mt-2 text-sm leading-6">
-              The conversation is hidden from the home screen. Enter the shared code to open it —
-              the code is separate from your account password.
+              Enter the code shared with you to continue.
             </p>
 
             <form onSubmit={submit} className="mt-5">
@@ -54,14 +53,14 @@ export function PromoScreen() {
                 className="field coupon-input text-center uppercase tracking-[0.18em]"
                 value={code}
                 onChange={(event) => setCode(event.target.value)}
-                placeholder="ENTER ACCESS CODE"
+                placeholder="ENTER CODE"
                 maxLength={100}
                 autoComplete="off"
                 autoCapitalize="characters"
                 autoFocus
               />
               <Button variant="primary" className="mt-3 w-full" disabled={busy}>
-                <LockKeyhole size={16} />
+                <KeyRound size={16} />
                 {busy ? 'Checking…' : 'Continue'}
               </Button>
             </form>
@@ -71,14 +70,6 @@ export function PromoScreen() {
                 {localError || duo.error}
               </p>
             )}
-
-            <div className="muted mt-5 flex items-start gap-2 text-xs leading-5">
-              <ShieldCheck size={15} className="mt-0.5 shrink-0 text-emerald-300" />
-              <span>
-                Access codes are stored only as a secure hash. Repeated invalid attempts are
-                rate-limited on the server.
-              </span>
-            </div>
           </div>
         </div>
       </div>

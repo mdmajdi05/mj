@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { CheckCheck, Gamepad2, Inbox, LockKeyhole, Send } from 'lucide-react';
+import { CheckCheck, Gamepad2, Inbox, Send } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useDuo } from '@/hooks/useDuoApp';
 import { formatDateTime } from '@/lib/utils';
@@ -20,18 +20,12 @@ export function InboxScreen() {
     }
   }
 
-  function continueToChat() {
-    setSelected(null);
-    // The Game Inbox never opens private Chat directly.
-    duo.navigate('PROMO');
-  }
-
   return (
     <>
       <SectionTitle
-        eyebrow="Game Inbox"
-        title="Incoming Game Messages"
-        description="Messages intentionally sent with SEND-TO-GAME ON. Nothing is silently redirected."
+        eyebrow="Game Chat"
+        title="Messages from your games"
+        description="Chat sent while playing with SEND-TO-GAME ON. These messages stay separate from the game screen."
         action={
           <div className="flex gap-2">
             <Button onClick={() => void duo.markInboxRead()}>
@@ -83,23 +77,10 @@ export function InboxScreen() {
         {!duo.gameMessages.length && (
           <EmptyState
             icon={<Inbox size={26} />}
-            title="No game messages yet"
-            description="In a game, switch SEND-TO-GAME ON and send a message to appear here."
+            title="No game chat yet"
+            description="In a game, switch SEND-TO-GAME ON and send a message to see it here."
           />
         )}
-      </div>
-
-      <div className="panel mt-4 flex flex-wrap items-center justify-between gap-3 p-5">
-        <div>
-          <p className="font-medium">Private Chat is hidden</p>
-          <p className="muted mt-1 text-sm">
-            Chat opens only from your profile with the secret access code. Game messages stay in
-            this Inbox.
-          </p>
-        </div>
-        <Button variant="primary" onClick={() => duo.navigate('PROMO')}>
-          <LockKeyhole size={15} /> Enter Secret Code
-        </Button>
       </div>
 
       <Modal
@@ -122,9 +103,6 @@ export function InboxScreen() {
               <Button onClick={() => setSelected(null)}>Close</Button>
               <Button onClick={() => duo.navigate('GAMES')}>
                 <Send size={15} /> Back to games
-              </Button>
-              <Button variant="primary" onClick={continueToChat}>
-                <LockKeyhole size={15} /> Enter secret code
               </Button>
             </div>
           </>

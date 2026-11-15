@@ -8,7 +8,7 @@ export async function sendGenericPush(userId:string){
  const preference=await prisma.notificationPreference.findUnique({where:{userId}});if(!preference?.browser)return;
  const subscriptions=await prisma.pushSubscription.findMany({where:{userId}});
  await Promise.all(subscriptions.map(async sub=>{
-  try{await webpush.sendNotification({endpoint:sub.endpoint,keys:{p256dh:sub.p256dh,auth:sub.auth}},JSON.stringify({title:'Private Duo',body:'You have a new notification.'}))}
+  try{await webpush.sendNotification({endpoint:sub.endpoint,keys:{p256dh:sub.p256dh,auth:sub.auth}},JSON.stringify({title:'Study with Game',body:'You have a new notification.'}))}
   catch(error:any){if(error?.statusCode===404||error?.statusCode===410)await prisma.pushSubscription.delete({where:{id:sub.id}}).catch(()=>{});else console.error('Web Push delivery failed',error?.message||error)}
  }));
 }

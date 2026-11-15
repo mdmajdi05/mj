@@ -95,8 +95,8 @@ export function ChatScreen() {
         <div className="flex items-center gap-2">
           <button
             className="icon-btn"
-            aria-label="Close private chat"
-            title="Close private chat"
+            aria-label="Close chat"
+            title="Close chat"
             onClick={duo.closePrivateChat}
           >
             <X size={18} />
@@ -277,7 +277,7 @@ export function ChatScreen() {
       >
         <p className="muted text-sm leading-6">
           {confirmAction?.type === 'history'
-            ? 'This permanently removes all private Chat messages. It cannot be undone and RESTORE cannot recover them. Audit metadata is kept without message content.'
+            ? 'This permanently removes all Chat messages. It cannot be undone and RESTORE cannot recover them. Audit metadata is kept without message content.'
             : confirmAction?.type === 'archive'
               ? 'Messages and timestamps are preserved. The conversation is removed from active Chat and can be reopened with RESTORE.'
               : 'The selected message will be permanently hidden from the conversation.'}

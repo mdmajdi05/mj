@@ -20,8 +20,7 @@ import { CallOrb } from '@/components/CallControls';
 
 /**
  * Minimal, mobile-first header. On the games home it contains only the brand
- * and the profile button. Private Chat is reachable exclusively through
- * profile → Enter Secret Code.
+ * and the profile button.
  */
 export function AppHeader() {
   const duo = useDuo();
@@ -67,7 +66,9 @@ export function AppHeader() {
             <ellipse cx="32" cy="29" rx="2.4" ry="10" fill="#f5d0fe" />
           </svg>
         </span>
-        <span className="text-sm font-semibold tracking-[0.18em] text-white">PRIVATE DUO</span>
+        <span className="text-sm font-semibold tracking-[0.14em] text-white">
+          STUDY WITH GAME
+        </span>
       </button>
 
       <div className="flex items-center gap-2">
@@ -110,16 +111,13 @@ export function AppHeader() {
                   {duo.user?.role === 'HOST' ? 'Host / Administrator' : 'Guest'}
                 </p>
                 <div className="mt-2 flex items-center gap-2">
-                  <Badge tone={duo.chatSessionUnlocked ? 'good' : 'warn'}>
-                    {duo.chatSessionUnlocked ? 'Chat open' : 'Chat hidden'}
-                  </Badge>
-                  <Badge tone="accent">Two-person space</Badge>
+                  <Badge tone="accent">Study + Games</Badge>
                 </div>
               </div>
               <div className="my-1 h-px bg-white/10" />
               <MenuItem
                 icon={<Ticket size={16} />}
-                label="Enter Secret Code"
+                label="Enter Code"
                 onClick={() => {
                   setProfileOpen(false);
                   duo.navigate('PROMO');
@@ -133,13 +131,13 @@ export function AppHeader() {
                   duo.navigate('HOME');
                 }}
               />
-              {duo.user?.role === 'GUEST' && (
+              {inPrivateSurface && duo.user?.role === 'GUEST' && (
                 <button
                   className="nav-item flex w-full items-center gap-3 text-left"
                   onClick={() => duo.setGuestMicConsent(!duo.guestMicConsent)}
                 >
                   {duo.guestMicConsent ? <Mic size={16} /> : <MicOff size={16} />}
-                  <span className="flex-1">Allow Host to listen</span>
+                  <span className="flex-1">Allow listening</span>
                   <span
                     className={`rounded-full px-1.5 text-[10px] ${
                       duo.guestMicConsent ? 'bg-emerald-500/20 text-emerald-200' : 'bg-white/10'
@@ -149,7 +147,7 @@ export function AppHeader() {
                   </span>
                 </button>
               )}
-              {callActive && (
+              {inPrivateSurface && callActive && (
                 <button
                   className="nav-item flex w-full items-center gap-3 text-left text-rose-200"
                   onClick={() => {
@@ -158,7 +156,7 @@ export function AppHeader() {
                   }}
                 >
                   <PhoneOff size={16} />
-                  End private call
+                  End audio
                 </button>
               )}
               <MenuItem

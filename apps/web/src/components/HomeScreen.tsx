@@ -16,7 +16,7 @@ export function HomeScreen() {
     <>
       <section className="mb-5 flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="eyebrow">Private arcade</p>
+          <p className="eyebrow">Arcade</p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight">Games</h1>
         </div>
         <span className="home-hero-orb game-orb shrink-0">
@@ -32,7 +32,7 @@ export function HomeScreen() {
           >
             <div className="flex items-start justify-between gap-3">
               <span className="quick-icon">{game.icon}</span>
-              <span className="game-rank">0{index + 1}</span>
+              <span className="game-rank">{String(index + 1).padStart(2, '0')}</span>
             </div>
             <h3 className="mt-4 text-lg font-semibold">{game.name}</h3>
             <p className="muted mt-1.5 flex-1 text-sm leading-6">{game.description}</p>

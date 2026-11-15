@@ -3,6 +3,7 @@
 import { AlertTriangle, CheckCircle2, X } from 'lucide-react';
 import { DuoContext, useDuo, useDuoApp } from '@/hooks/useDuoApp';
 import { LoginScreen } from '@/components/LoginScreen';
+import { HostLoginScreen } from '@/components/HostLoginScreen';
 import { AppHeader } from '@/components/AppHeader';
 import { HomeScreen } from '@/components/HomeScreen';
 import { ChatScreen } from '@/components/ChatScreen';
@@ -16,27 +17,29 @@ import { SettingsScreen } from '@/components/SettingsScreen';
 import { AdminScreen } from '@/components/AdminScreen';
 import { Spinner } from '@/components/ui';
 
-export default function DuoApp() {
+export default function DuoApp({ hostMode = false }: { hostMode?: boolean }) {
   const duo = useDuoApp();
   return (
     <DuoContext.Provider value={duo}>
-      <DuoShell />
+      <DuoShell hostMode={hostMode} />
     </DuoContext.Provider>
   );
 }
 
-function DuoShell() {
+function DuoShell({ hostMode }: { hostMode: boolean }) {
   const duo = useDuo();
 
   if (duo.booting) {
     return (
       <main className="login-shell">
         <div className="panel px-8 py-7">
-          <Spinner label="Opening your private space…" />
+          <Spinner label="Opening…" />
         </div>
       </main>
     );
   }
+
+  if (hostMode && (!duo.user || duo.user.role !== 'HOST')) return <HostLoginScreen />;
 
   if (!duo.user) return <LoginScreen />;
 

@@ -88,7 +88,7 @@ server.requestTimeout = 30_000;
 server.headersTimeout = 35_000;
 
 server.listen(port, () => {
-  console.log(`Private Duo API listening on ${port}`);
+  console.log(`Study with Game API listening on ${port}`);
   console.log(`Allowed web origins: ${allowedOrigins.join(', ')}`);
 });
 

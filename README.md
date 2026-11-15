@@ -1,6 +1,6 @@
-# PRIVATE DUO
+# STUDY WITH GAME
 
-A private two-account communication application. This repository contains a Next.js frontend, an Express + Socket.IO API, PostgreSQL persistence, WebRTC audio signalling, Web Push support, and an isolated Docker deployment.
+A two-account study and games app. This repository contains a Next.js frontend, an Express + Socket.IO API, PostgreSQL persistence, WebRTC audio signalling, Web Push support, and an isolated Docker deployment.
 
 ## What is implemented
 
@@ -12,8 +12,8 @@ A private two-account communication application. This repository contains a Next
 - Hinglish Study Assistant with a predefined question and a locally simulated ~60-second response; completion is remembered in local storage; reduced-motion skips the animation. It does not claim to call an AI model.
 - Separate promo-code unlock and `RESTORE` command. Promo codes are bcrypt hashes and attempts are rate-limited.
 - Separate hide, archive, restore and permanent delete paths. Host-only destructive actions and audit records.
-- Three playable games: timed word typing, falling words with lives and increasing spawn/fall speed, and a color-sequence memory game.
-- Send-to-Game routes messages to a separate persisted Game Inbox; OFF routes to normal Chat. The active destination is shown beside the toggle.
+- Twelve playable games: Turbo Track, Bubble Pop, Snake Classic, Word Typing, Falling Words, Color Sequence, Slide Puzzle, Pair Match, Tic Tac Toe, Whack a Mole, Brick Breaker and Math Sprint.
+- Send-to-Game routes messages to a separate persisted Game Chat; OFF routes to Main Chat. The active destination is shown beside the toggle and only when available.
 - Real-time activity/presence events and notification preference controls.
 - Audio calls using WebRTC peer connections, Socket.IO signalling, microphone permission prompts, accept/decline/end, call duration, local mute, call hiding, and consent-gated remote microphone requests. Guest can mute the Host mic after Host grants remote-control consent; Host can always re-enable their own mic and can control the Guest mic only after Guest consent.
 - Host dashboard: normal/game message history, search, individual deletion, full history deletion, permission requests, promo rotation, call/notification/audit activity.

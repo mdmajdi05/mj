@@ -78,6 +78,7 @@ export function useDuoApp() {
   const [callStartedAt, setCallStartedAt] = useState<number | null>(null);
   const [guestMicConsent, setGuestMicConsentState] = useState(false);
   const [chatSessionUnlocked, setChatSessionUnlocked] = useState(false);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
   const userRef = useRef<User | null>(null);
@@ -139,6 +140,18 @@ export function useDuoApp() {
   }, []);
 
   useEffect(() => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    if (!error && !notice) return;
+    toastTimerRef.current = setTimeout(() => {
+      setError('');
+      setNotice('');
+    }, 3200);
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, [error, notice]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
       setGuestMicConsentState(localStorage.getItem('private-duo-mic-consent') === '1');
@@ -147,22 +160,14 @@ export function useDuoApp() {
     }
   }, []);
 
-  const setGuestMicConsent = useCallback(
-    (enabled: boolean) => {
-      setGuestMicConsentState(enabled);
-      try {
-        localStorage.setItem('private-duo-mic-consent', enabled ? '1' : '0');
-      } catch {
-        // The in-memory setting still applies for this session.
-      }
-      showNotice(
-        enabled
-          ? 'Host can now connect and listen while you are online. You can turn this off any time.'
-          : 'Automatic mic access is off. Incoming calls will ask for your approval.'
-      );
-    },
-    [showNotice]
-  );
+  const setGuestMicConsent = useCallback((enabled: boolean) => {
+    setGuestMicConsentState(enabled);
+    try {
+      localStorage.setItem('private-duo-mic-consent', enabled ? '1' : '0');
+    } catch {
+      // The in-memory setting still applies for this session.
+    }
+  }, []);
 
   const applyPrivateOutput = useCallback(async () => {
     if (userRef.current?.role !== 'GUEST') return;
@@ -237,9 +242,9 @@ export function useDuoApp() {
     if (typeof window === 'undefined' || !('Notification' in window)) return;
     if (Notification.permission !== 'granted') return;
     try {
-      new Notification('Private Duo', {
+      new Notification('Study with Game', {
         body: 'You have a new message.',
-        tag: 'private-duo',
+        tag: 'study-with-game',
         silent: true
       });
     } catch {
@@ -367,19 +372,39 @@ export function useDuoApp() {
     [loadNotifications, setScreen, showError]
   );
 
-  const login = useCallback(async (username: 'host' | 'guest', password: string) => {
-    const account = await api<User>('/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ username, password })
-    });
-    setUser(account);
-    userRef.current = account;
-    setScreen('HOME');
-    void api('/chat/screen', {
-      method: 'POST',
-      body: JSON.stringify({ screen: 'HOME' })
-    }).catch(() => undefined);
-  }, [setScreen]);
+  const loginGuest = useCallback(
+    async (name: string) => {
+      const account = await api<User>('/auth/guest', {
+        method: 'POST',
+        body: JSON.stringify({ name })
+      });
+      setUser(account);
+      userRef.current = account;
+      setScreen('HOME');
+      void api('/chat/screen', {
+        method: 'POST',
+        body: JSON.stringify({ screen: 'HOME' })
+      }).catch(() => undefined);
+    },
+    [setScreen]
+  );
+
+  const loginHost = useCallback(
+    async (password: string) => {
+      const account = await api<User>('/auth/host', {
+        method: 'POST',
+        body: JSON.stringify({ password })
+      });
+      setUser(account);
+      userRef.current = account;
+      setScreen('HOME');
+      void api('/chat/screen', {
+        method: 'POST',
+        body: JSON.stringify({ screen: 'HOME' })
+      }).catch(() => undefined);
+    },
+    [setScreen]
+  );
 
   const logout = useCallback(async () => {
     const activeId = callIdRef.current;
@@ -863,8 +888,6 @@ export function useDuoApp() {
     if (state === 'ACTIVE') {
       if (userRef.current?.role === 'HOST') {
         toggleMic();
-      } else {
-        showNotice('Microphone access is shared with Host while this call is active.');
       }
       return;
     }
@@ -874,7 +897,7 @@ export function useDuoApp() {
     }
     if (state === 'CONNECTING' || state === 'RINGING') return;
     await startCall();
-  }, [resumeCall, showNotice, startCall, toggleMic]);
+  }, [resumeCall, startCall, toggleMic]);
 
   const enterStudyMode = useCallback(() => {
     const inCall =
@@ -893,10 +916,8 @@ export function useDuoApp() {
   const playRemoteAudio = useCallback(() => {
     if (!remoteAudioRef.current) return;
     remoteAudioRef.current.muted = callMuted;
-    void remoteAudioRef.current
-      .play()
-      .catch(() => showNotice('Tap the day/night toggle once, then the timer, to enable call sound.'));
-  }, [callMuted, showNotice]);
+    void remoteAudioRef.current.play().catch(() => undefined);
+  }, [callMuted]);
 
   const remoteMic = useCallback(
     (enabled: boolean) => {
@@ -1027,7 +1048,7 @@ export function useDuoApp() {
 
     socket.on('game:messages:cleared', () => {
       void loadInbox().catch(() => undefined);
-      showNotice('Game Inbox messages were cleared by Host.');
+      showNotice('Game Chat messages were cleared.');
     });
 
     socket.on('notification:butterfly', (payload: { id: string }) => {
@@ -1084,7 +1105,6 @@ export function useDuoApp() {
       }
       setConversationStatus('ACTIVE');
       void loadMessages().catch(() => undefined);
-      showNotice('Conversation restored.');
     });
     socket.on('chat:restore:failed', (payload: any) =>
       showError(payload?.error || 'Previous conversation is no longer available.')
@@ -1155,25 +1175,12 @@ export function useDuoApp() {
       if (callIdRef.current) {
         socket.emit('call:mic-status', { callId: callIdRef.current, enabled });
       }
-      showNotice(
-        enabled
-          ? 'The other participant unmuted your microphone.'
-          : 'The other participant muted your microphone.'
-      );
     });
-    socket.on('call:remote-mic:sent', (payload: { enabled?: boolean }) =>
-      showNotice(payload?.enabled ? 'Remote unmute request sent.' : 'Remote mute request sent.')
-    );
-    socket.on('call:ended', (payload: { reason?: string }) => {
+    socket.on('call:remote-mic:sent', () => undefined);
+    socket.on('call:ended', () => {
       closeLocalCall();
-      if (payload?.reason === 'host-ended') showNotice('Host ended the call for both participants.');
-      else if (payload?.reason === 'declined') showNotice('Call declined.');
-      else if (payload?.reason === 'no-answer') showNotice('Call was not answered.');
-      else if (payload?.reason === 'participant-left') showNotice('The other participant left the call.');
     });
-    socket.on('call:participant-left', (payload: { username?: string }) => {
-      showNotice(`${payload?.username || 'The other participant'} left the call.`);
-    });
+    socket.on('call:participant-left', () => undefined);
     socket.on('call:left', () => closeLocalCall());
     socket.on('call:error', (payload: any) => {
       showError(payload?.error || 'Call could not be started.');
@@ -1268,9 +1275,8 @@ export function useDuoApp() {
       const value = content.trim();
       if (!value) return false;
       if (destination === 'CHAT' && !chatUnlockedRef.current) {
-        showError('Enter the secret code before sending to private Chat.');
-        navigate('PROMO');
-        return false;
+        // Never reveal the code gate: fall back to the game thread.
+        destination = 'GAME';
       }
       const socket = socketRef.current;
       if (!socket?.connected) {
@@ -1298,9 +1304,8 @@ export function useDuoApp() {
       await loadMessages();
       setConversationStatus('ACTIVE');
       navigate('CHAT');
-      showNotice('Chat unlocked.');
     },
-    [loadMessages, navigate, showNotice, unlockChatSession]
+    [loadMessages, navigate, unlockChatSession]
   );
 
   const restoreChat = useCallback(
@@ -1320,9 +1325,8 @@ export function useDuoApp() {
       setConversationStatus('ACTIVE');
       await loadMessages();
       navigate('CHAT');
-      showNotice('Previous conversation restored.');
     },
-    [loadMessages, navigate, showNotice]
+    [loadMessages, navigate]
   );
 
   const deleteMessage = useCallback(
@@ -1336,15 +1340,13 @@ export function useDuoApp() {
   const archiveChat = useCallback(async () => {
     await api('/chat/archive', { method: 'POST' });
     setConversationStatus('ARCHIVED');
-    showNotice('Conversation archived. Use RESTORE to reopen it.');
-  }, [showNotice]);
+  }, []);
 
   const deleteHistory = useCallback(async () => {
     await api('/chat/history', { method: 'DELETE' });
     setMessages([]);
     setConversationStatus('DELETED');
-    showNotice('Conversation permanently deleted.');
-  }, [showNotice]);
+  }, []);
 
   const startGame = useCallback(
     (slug: string) => {
@@ -1468,7 +1470,8 @@ export function useDuoApp() {
     remoteAudioRef,
     setScreen,
     navigate,
-    login,
+    loginGuest,
+    loginHost,
     logout,
     updatePreference,
     enableBrowserNotifications,

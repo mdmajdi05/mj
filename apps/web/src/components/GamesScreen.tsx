@@ -12,11 +12,11 @@ export function GamesScreen() {
       <SectionTitle
         eyebrow="Play together"
         title="Mini Games"
-        description="Three quick games for a small break. Scores are stored per account."
+        description="A growing arcade of quick games for a small break. Scores are stored per account."
         action={
           <Button onClick={() => duo.navigate('INBOX')}>
             <Inbox size={16} />
-            Game Inbox
+            Game Chat
             {duo.inboxUnread > 0 && (
               <span className="rounded-full bg-pink-500 px-1.5 text-[10px]">{duo.inboxUnread}</span>
             )}
@@ -24,7 +24,7 @@ export function GamesScreen() {
         }
       />
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3">
         {gameCatalog.map((game) => (
           <div
             key={game.slug}
@@ -51,15 +51,15 @@ export function GamesScreen() {
 
       <div className="panel mt-5 flex flex-wrap items-center justify-between gap-3 p-5">
         <div>
-          <p className="font-medium">Send-to-Game</p>
+          <p className="font-medium">Game Chat</p>
           <p className="muted mt-1 text-sm leading-6">
-            Inside a game, switch SEND-TO-GAME ON to send a message to the Game Inbox. OFF sends it
-            to the normal private Chat. The active destination is always visible.
+            Inside a game, switch GAME CHAT ON to keep messages with that session. Turn it off to
+            send to Main Chat instead. The active destination is always visible.
           </p>
         </div>
         <Button onClick={() => duo.navigate('INBOX')}>
           <Inbox size={16} />
-          Open Incoming Game Messages
+          Open Game Chat
         </Button>
       </div>
     </>
