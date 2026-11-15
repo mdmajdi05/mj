@@ -34,6 +34,8 @@ export type Screen =
 
 export type MessageDestination = 'CHAT' | 'GAME';
 
+export type AudioOutput = 'EARPIECE' | 'SPEAKER';
+
 export type Message = {
   id: string;
   content: string;

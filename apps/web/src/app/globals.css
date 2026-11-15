@@ -1394,6 +1394,66 @@ button:disabled {
   color: #f5d0fe;
 }
 
+/* Host home: online people + unread counts */
+.host-people-list {
+  display: grid;
+  gap: 0.15rem;
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+/* Compact session controls (mute / speaker / earpiece) */
+.call-panel {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: linear-gradient(150deg, #1b1626, #141019);
+  padding: 0.45rem 0.6rem;
+}
+
+.call-panel-status {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #fcd34d;
+  padding-right: 0.15rem;
+}
+
+.call-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.call-panel-btn {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0.32rem 0.7rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.72);
+  transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
+}
+
+.call-panel-btn:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.call-panel-btn.is-on {
+  border-color: rgba(192, 132, 252, 0.55);
+  background: rgba(168, 85, 247, 0.24);
+  color: #f5d0fe;
+}
+
+.call-panel-btn.is-end {
+  border-color: rgba(248, 113, 113, 0.4);
+  color: #fecaca;
+}
+
 .chat-head {
   display: flex;
   flex-shrink: 0;

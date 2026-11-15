@@ -8,15 +8,12 @@ import {
   LogOut,
   Mic,
   MicOff,
-  PhoneCall,
-  PhoneOff,
   Settings,
   Shield,
   Ticket,
   UserPlus
 } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
-import { formatDuration } from '@/lib/utils';
 import { Badge } from '@/components/ui';
 
 /**
@@ -73,23 +70,6 @@ export function AppHeader() {
       </button>
 
       <div className="flex items-center gap-2">
-        {inPrivateSurface && callActive && (
-          <button
-            type="button"
-            className={`call-timer-chip ${
-              duo.callState === 'RECONNECTING' ? 'call-timer-chip-warn' : ''
-            }`}
-            onClick={duo.playRemoteAudio}
-            title="Free chat timer. Tap to enable call sound."
-          >
-            <PhoneCall size={14} />
-            <span className="hidden sm:inline">
-              {duo.callState === 'RECONNECTING' ? 'Reconnecting' : 'Free chat'}
-            </span>
-            <b>{formatDuration(duo.callSeconds)}</b>
-          </button>
-        )}
-
         <div className="relative" ref={profileRef}>
           <button
             className="btn btn-profile"
@@ -180,7 +160,7 @@ export function AppHeader() {
                   </span>
                 </button>
               )}
-              {inPrivateSurface && callActive && (
+              {inPrivateSurface && callActive && duo.user?.role === 'HOST' && (
                 <button
                   className="nav-item flex w-full items-center gap-3 text-left text-rose-200"
                   onClick={() => {
@@ -188,8 +168,8 @@ export function AppHeader() {
                     duo.hangup();
                   }}
                 >
-                  <PhoneOff size={16} />
-                  End audio
+                  <LogOut size={16} />
+                  End session
                 </button>
               )}
               <MenuItem

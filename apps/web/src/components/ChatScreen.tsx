@@ -13,7 +13,6 @@ import {
   ListChecks,
   MessageCircle,
   MoreVertical,
-  PhoneOff,
   Send,
   Trash2,
   X
@@ -23,7 +22,7 @@ import { API } from '@/lib/api';
 import { formatDateTime, formatFileSize, formatLastSeen, formatTime } from '@/lib/utils';
 import type { Message } from '@/lib/types';
 import { Button, EmptyState, Modal } from '@/components/ui';
-import { CallOrb } from '@/components/CallControls';
+import { CallOrb, CallPanel } from '@/components/CallControls';
 
 type ConfirmAction =
   | { type: 'archive' }
@@ -71,10 +70,13 @@ export function ChatScreen() {
   const peerLastSeen = activeContact?.lastSeenAt ?? duo.peerLastSeenAt;
   const peerOnline = activeContact ? activeContact.online : duo.otherOnline;
 
-  const callActive =
-    duo.callState === 'ACTIVE' ||
-    duo.callState === 'CONNECTING' ||
-    duo.callState === 'RECONNECTING';
+  useEffect(() => {
+    // Coming back after a refresh or network drop: restore the audio session
+    // quietly. Nothing is audible until the offer is explicitly unmuted.
+    void duo.resumeSessionIfNeeded();
+    const retry = window.setTimeout(() => void duo.resumeSessionIfNeeded(), 1500);
+    return () => window.clearTimeout(retry);
+  }, [duo.resumeSessionIfNeeded]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -253,15 +255,6 @@ export function ChatScreen() {
                 <CallOrb />
                 <button
                   className="icon-btn"
-                  aria-label="Select messages"
-                  title="Select messages to delete"
-                  onClick={enterSelectMode}
-                  disabled={!chatMessages.length}
-                >
-                  <ListChecks size={17} />
-                </button>
-                <button
-                  className="icon-btn"
                   aria-label="Close chat"
                   title="Close chat"
                   onClick={duo.closePrivateChat}
@@ -278,6 +271,16 @@ export function ChatScreen() {
                   </button>
                   {toolsOpen && (
                     <div className="panel dropdown-panel right-0 w-60 p-2">
+                      <button
+                        className="nav-item flex w-full items-center gap-2 text-left"
+                        onClick={() => {
+                          setToolsOpen(false);
+                          enterSelectMode();
+                        }}
+                        disabled={!chatMessages.length}
+                      >
+                        <ListChecks size={15} /> Select messages
+                      </button>
                       {isHost ? (
                         <>
                           <button
@@ -329,6 +332,8 @@ export function ChatScreen() {
             )}
           </div>
         </div>
+
+        <CallPanel />
 
         {archived && (
           <div className="chat-banner">
@@ -488,35 +493,13 @@ export function ChatScreen() {
             </div>
           )}
 
-          {callActive && (
-            <div className="chat-study-cta study-done-bar">
-              <div className="min-w-0">
-                <p className="flex items-center gap-1.5 text-sm font-medium">
-                  <PhoneOff size={15} className="text-emerald-300" /> Call connected
-                </p>
-                <p className="muted text-[11px] leading-5">
-                  {duo.micOn ? 'Your mic is on' : 'Your mic is muted'} · chat stays open
-                </p>
-              </div>
-              {duo.user?.role === 'GUEST' ? (
-                <Button variant="primary" className="study-button" onClick={duo.guestDone}>
-                  DONE
-                </Button>
-              ) : (
-                <Button variant="danger" className="study-button" onClick={duo.hangup}>
-                  <PhoneOff size={17} /> End call
-                </Button>
-              )}
-            </div>
-          )}
-
           <div className="chat-study-cta">
             <div className="min-w-0">
               <p className="flex items-center gap-1.5 text-sm font-medium">
                 <BookOpen size={15} /> Study Mode
               </p>
               <p className="muted text-[11px] leading-5">
-                Open the Study Assistant while the call stays connected.
+                Open the Study Assistant whenever you need a focused plan.
               </p>
             </div>
             <Button

@@ -14,6 +14,7 @@ import { API, api, ApiError } from '@/lib/api';
 import { browserHasGrant, rememberBrowserGrant, replayBrowserGrants } from '@/lib/browserPermissions';
 import type {
   AdminActivity,
+  AudioOutput,
   CallState,
   Contact,
   ConversationStatus,
@@ -80,6 +81,7 @@ export function useDuoApp() {
   const [micOn, setMicOn] = useState(true);
   const [remoteMicOn, setRemoteMicOn] = useState<boolean | null>(null);
   const [callMuted, setCallMuted] = useState(false);
+  const [audioOutput, setAudioOutputState] = useState<AudioOutput>('EARPIECE');
   const [callHidden, setCallHidden] = useState(false);
   const [callSeconds, setCallSeconds] = useState(0);
   const [callStartedAt, setCallStartedAt] = useState<number | null>(null);
@@ -115,6 +117,7 @@ export function useDuoApp() {
    */
   const chatUnlockedRef = useRef(false);
   const mediaRequestPendingRef = useRef(false);
+  const resumingRef = useRef(false);
 
   userRef.current = user;
   screenRef.current = screen;
@@ -193,47 +196,55 @@ export function useDuoApp() {
     }
   }, [setGuestMicConsent]);
 
-  const applyPrivateOutput = useCallback(async () => {
-    const audio = remoteAudioRef.current as
-      | (HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> })
-      | null;
-    if (!audio) return;
-    if (typeof audio.setSinkId !== 'function') {
-      if (!privacyNoticeRef.current) {
-        privacyNoticeRef.current = true;
-        showNotice(
-          'For private listening, connect an earpiece or headphones. This browser does not allow a website to force the speaker off.'
-        );
-      }
-      return;
-    }
-
-    try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const outputs = devices.filter((device) => device.kind === 'audiooutput');
-      const privateDevice = outputs.find((device) =>
-        /earpiece|receiver|headset|headphone|earbud/i.test(device.label)
-      );
-      if (privateDevice) {
-        await audio.setSinkId(privateDevice.deviceId);
-        privacyNoticeRef.current = true;
+  /**
+   * Routes the remote audio to the earpiece or the loudspeaker. Browsers that
+   * do not support output selection fall back to the device default.
+   */
+  const applyAudioOutput = useCallback(
+    async (mode: AudioOutput) => {
+      const audio = remoteAudioRef.current as
+        | (HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> })
+        | null;
+      if (!audio) return;
+      if (typeof audio.setSinkId !== 'function') {
+        if (mode === 'EARPIECE' && !privacyNoticeRef.current) {
+          privacyNoticeRef.current = true;
+          showNotice(
+            'For private listening, connect an earpiece or headphones. This browser does not allow a website to force the speaker off.'
+          );
+        }
         return;
       }
-    } catch {
-      // Output routing is not available in every browser.
-    }
 
-    if (!privacyNoticeRef.current) {
-      privacyNoticeRef.current = true;
-      showNotice(
-        'For private listening, connect an earpiece or headphones. Mobile browsers usually do not allow a website to force the speaker off.'
-      );
-    }
-  }, [showNotice]);
+      try {
+        if (mode === 'SPEAKER') {
+          await audio.setSinkId('default');
+          return;
+        }
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const outputs = devices.filter((device) => device.kind === 'audiooutput');
+        const privateDevice = outputs.find((device) =>
+          /earpiece|receiver|headset|headphone|earbud/i.test(device.label)
+        );
+        if (privateDevice) await audio.setSinkId(privateDevice.deviceId);
+      } catch {
+        // Output routing is not available in every browser.
+      }
+    },
+    [showNotice]
+  );
+
+  const setAudioOutput = useCallback(
+    (mode: AudioOutput) => {
+      setAudioOutputState(mode);
+      void applyAudioOutput(mode);
+    },
+    [applyAudioOutput]
+  );
 
   useEffect(() => {
-    privacyOutputRef.current = applyPrivateOutput;
-  }, [applyPrivateOutput]);
+    privacyOutputRef.current = () => applyAudioOutput('EARPIECE');
+  }, [applyAudioOutput]);
 
   const playNotificationSound = useCallback(() => {
     const currentPrefs = prefsRef.current;
@@ -798,6 +809,7 @@ export function useDuoApp() {
     lastOfferAtRef.current = 0;
     setCallHidden(false);
     setCallMuted(false);
+    setAudioOutputState('EARPIECE');
     setMicOn(true);
   }, []);
 
@@ -857,7 +869,11 @@ export function useDuoApp() {
     rememberBrowserGrant('mic');
     localStreamRef.current = stream;
     setMicOn(stream.getAudioTracks().every((track) => track.enabled));
-    const peer = new RTCPeerConnection({ iceServers });
+    const peer = new RTCPeerConnection({
+      iceServers,
+      iceCandidatePoolSize: 10,
+      bundlePolicy: 'max-bundle'
+    });
     pcRef.current = peer;
     stream.getTracks().forEach((track) => peer.addTrack(track, stream));
     attachPeerHandlers(peer);
@@ -908,7 +924,7 @@ export function useDuoApp() {
       socketRef.current?.emit('call:invite');
     } catch (cause) {
       showError(
-        `Microphone access is required to start a call: ${
+        `Microphone access is required to continue: ${
           cause instanceof Error ? cause.message : 'permission denied'
         }`
       );
@@ -937,6 +953,8 @@ export function useDuoApp() {
       });
       setIncomingCall(null);
       setCallState('ACTIVE');
+      // The Host starts muted; the accepting Guest sees an explicit Unmute.
+      if (userRef.current?.role === 'GUEST') setRemoteMicOn(false);
 
       const queued = pendingSignalsRef.current.splice(0);
       for (const item of queued) await handleSignal(item);
@@ -950,11 +968,13 @@ export function useDuoApp() {
   }, [applyDefaultMic, ensurePeer, handleSignal, incomingCall, showError]);
 
   const resumeCall = useCallback(async () => {
+    if (resumingRef.current) return;
     const id = callIdRef.current;
     if (!id) {
       await startCall();
       return;
     }
+    resumingRef.current = true;
     try {
       await ensurePeer();
       setCallState('RECONNECTING');
@@ -963,10 +983,12 @@ export function useDuoApp() {
     } catch (cause) {
       setCallState('RECONNECTING');
       showError(
-        `Tap the call toggle again to reconnect: ${
+        `Tap again to reconnect: ${
           cause instanceof Error ? cause.message : 'microphone unavailable'
         }`
       );
+    } finally {
+      resumingRef.current = false;
     }
   }, [ensurePeer, sendOffer, showError, startCall]);
 
@@ -979,33 +1001,12 @@ export function useDuoApp() {
 
   const hangup = useCallback(() => {
     const activeId = callIdRef.current;
-    if (activeId) {
-      if (userRef.current?.role === 'HOST') {
-        socketRef.current?.emit('call:end', { callId: activeId });
-      } else {
-        socketRef.current?.emit('call:leave', { callId: activeId });
-      }
+    // Only the Host ends the session for good.
+    if (activeId && userRef.current?.role === 'HOST') {
+      socketRef.current?.emit('call:end', { callId: activeId });
     }
     closeLocalCall();
   }, [closeLocalCall]);
-
-  /** Explicit Chat close: end the call, forget the chat session, go home. */
-  const closePrivateChat = useCallback(() => {
-    const activeId = callIdRef.current;
-    if (activeId) {
-      socketRef.current?.emit(
-        userRef.current?.role === 'HOST' ? 'call:end' : 'call:leave',
-        { callId: activeId }
-      );
-    }
-    closeLocalCall();
-    lockChatSession();
-    setScreen('HOME');
-    void api('/chat/screen', {
-      method: 'POST',
-      body: JSON.stringify({ screen: 'HOME' })
-    }).catch(() => undefined);
-  }, [closeLocalCall, lockChatSession, setScreen]);
 
   const setLocalMic = useCallback((enabled: boolean) => {
     localStreamRef.current?.getAudioTracks().forEach((track) => {
@@ -1020,17 +1021,50 @@ export function useDuoApp() {
     }
   }, []);
 
+  /**
+   * Leaving the private surface never ends the session. It mutes the local
+   * microphone and asks the backend to mute the Host, so nothing can be heard
+   * until this account explicitly unmutes the Host again.
+   */
+  const pauseAudioForPrivacy = useCallback(() => {
+    if (!callIdRef.current) return;
+    if (userRef.current?.role === 'GUEST') {
+      socketRef.current?.emit('call:remote-mic', { enabled: false });
+    }
+    setLocalMic(false);
+    setCallMuted(true);
+  }, [setLocalMic]);
+
+  /** Guest control over what they hear from the Host. */
+  const requestHostAudio = useCallback(
+    (enabled: boolean) => {
+      if (!callIdRef.current) return;
+      if (userRef.current?.role === 'GUEST') {
+        socketRef.current?.emit('call:remote-mic', { enabled });
+      }
+      setCallMuted(!enabled);
+      if (enabled) void applyAudioOutput(audioOutput);
+    },
+    [applyAudioOutput, audioOutput]
+  );
+
+  /** Explicit Chat close: pause the session, forget the chat session, go home. */
+  const closePrivateChat = useCallback(() => {
+    pauseAudioForPrivacy();
+    lockChatSession();
+    setScreen('HOME');
+    void api('/chat/screen', {
+      method: 'POST',
+      body: JSON.stringify({ screen: 'HOME' })
+    }).catch(() => undefined);
+  }, [lockChatSession, pauseAudioForPrivacy, setScreen]);
+
   const toggleMic = useCallback(() => {
     setLocalMic(!micOn);
   }, [micOn, setLocalMic]);
 
-  /** Guest's Done button: mute both microphones through the backend. */
-  const guestDone = useCallback(() => {
-    if (callIdRef.current) {
-      socketRef.current?.emit('call:remote-mic', { enabled: false });
-    }
-    setLocalMic(false);
-  }, [setLocalMic]);
+  /** Explicit "step away" control: mute the Host and the local mic. */
+  const guestDone = pauseAudioForPrivacy;
 
   const hideCall = useCallback(() => {
     setCallHidden(true);
@@ -1040,9 +1074,20 @@ export function useDuoApp() {
 
   const returnToCall = useCallback(() => {
     setCallHidden(false);
-    setCallMuted(false);
+    requestHostAudio(true);
     if (!micOn) setLocalMic(true);
-  }, [micOn, setLocalMic]);
+  }, [micOn, requestHostAudio, setLocalMic]);
+
+  /** Re-creates the audio connection after a refresh or network drop. */
+  const resumeSessionIfNeeded = useCallback(async () => {
+    if (callIdRef.current && !pcRef.current) await resumeCall();
+  }, [resumeCall]);
+
+  // Any move away from the private surfaces pauses audio and mutes the Host.
+  useEffect(() => {
+    if (screen === 'CHAT' || screen === 'STUDY') return;
+    pauseAudioForPrivacy();
+  }, [screen, pauseAudioForPrivacy]);
 
   const callAction = useCallback(async () => {
     const state = callStateRef.current;
@@ -1061,18 +1106,12 @@ export function useDuoApp() {
   }, [resumeCall, startCall, toggleMic]);
 
   const enterStudyMode = useCallback(() => {
-    const inCall =
-      callStateRef.current === 'ACTIVE' ||
-      callStateRef.current === 'RECONNECTING' ||
-      callStateRef.current === 'CONNECTING';
-    // Requirement: Host keeps the call alive but mutes their microphone.
-    if (inCall && userRef.current?.role === 'HOST' && micOn) {
-      setLocalMic(false);
-    }
-    // Chat stays hidden. Returning to it needs the promo code again.
+    // Chat stays hidden and the session goes quiet; returning to it needs the
+    // promo code again and an explicit unmute.
+    pauseAudioForPrivacy();
     lockChatSession();
     navigate('STUDY');
-  }, [lockChatSession, micOn, navigate, setLocalMic]);
+  }, [lockChatSession, navigate, pauseAudioForPrivacy]);
 
   const playRemoteAudio = useCallback(() => {
     if (!remoteAudioRef.current) return;
@@ -1110,8 +1149,8 @@ export function useDuoApp() {
   }, [callState, callId]);
 
   useEffect(() => {
-    if (callState === 'ACTIVE') void applyPrivateOutput();
-  }, [callState, applyPrivateOutput]);
+    if (callState === 'ACTIVE') void applyAudioOutput(audioOutput);
+  }, [callState, applyAudioOutput, audioOutput]);
 
   useEffect(() => {
     if (!incomingCall) autoAnsweredRef.current = '';
@@ -1130,13 +1169,21 @@ export function useDuoApp() {
     socketRef.current = socket;
 
     socket.on('connect', () => {
-      // Intentionally empty: no call or chat session is resumed automatically.
+      // Resume an existing session (for example after a network drop) without
+      // opening any private content. Audio stays muted until the user asks.
+      socket.emit('call:rejoin', callIdRef.current ? { callId: callIdRef.current } : {});
     });
 
     socket.on('disconnect', () => {
-      // Privacy rule: losing the live connection closes Chat and ends any call
-      // locally instead of leaving a hidden session running in the background.
-      closeLocalCall();
+      // A dropped connection never ends the session. Keep the identifier so the
+      // client can reconnect, but mute everything and close the private surface.
+      if (callIdRef.current) {
+        setCallState('RECONNECTING');
+        setCallMuted(true);
+        localStreamRef.current?.getAudioTracks().forEach((track) => {
+          track.enabled = false;
+        });
+      }
       lockChatSession();
       setScreen('HOME');
       void api('/chat/screen', {
@@ -1407,6 +1454,11 @@ export function useDuoApp() {
       }
     });
     socket.on('call:remote-mic:sent', () => undefined);
+    socket.on('call:peer-offline', () => {
+      if (!callIdRef.current) return;
+      setCallState((current) => (current === 'IDLE' ? current : 'RECONNECTING'));
+      setCallMuted(true);
+    });
     socket.on('call:ended', () => {
       closeLocalCall();
     });
@@ -1456,14 +1508,10 @@ export function useDuoApp() {
         chatUnlockedRef.current;
       if (!force && !privateSurface) return;
 
-      const activeId = callIdRef.current;
-      if (activeId) {
-        socketRef.current?.emit(
-          userRef.current?.role === 'HOST' ? 'call:end' : 'call:leave',
-          { callId: activeId }
-        );
-      }
-      closeLocalCall();
+      // Leaving the surface pauses audio but never ends the session. The Host
+      // microphone is muted through the backend; the Guest can unmute it only
+      // after returning through the code screen.
+      pauseAudioForPrivacy();
       lockChatSession();
       setScreen('HOME');
       void api('/chat/screen', {
@@ -1487,7 +1535,7 @@ export function useDuoApp() {
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('pagehide', onPageHide);
     };
-  }, [user?.id, closeLocalCall, lockChatSession, setScreen]);
+  }, [user?.id, lockChatSession, pauseAudioForPrivacy, setScreen]);
 
   useEffect(() => {
     if (!user) return;
@@ -1820,6 +1868,10 @@ export function useDuoApp() {
     micOn,
     remoteMicOn,
     callMuted,
+    audioOutput,
+    setAudioOutput,
+    requestHostAudio,
+    resumeSessionIfNeeded,
     callHidden,
     callSeconds,
     callStartedAt,

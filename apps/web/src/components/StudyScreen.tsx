@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { BookOpen, PhoneOff, Send, Sparkles, X } from 'lucide-react';
+import { BookOpen, Send, Sparkles, X } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
 import {
   studyAutoOpener,
@@ -9,9 +9,9 @@ import {
   studyReply,
   studySuggestions
 } from '@/lib/study';
-import { formatDuration, formatTime } from '@/lib/utils';
+import { formatTime } from '@/lib/utils';
 import { Badge, Button } from '@/components/ui';
-import { CallOrb } from '@/components/CallControls';
+import { CallOrb, CallPanel } from '@/components/CallControls';
 
 type StudyMessage = {
   id: string;
@@ -45,14 +45,14 @@ export function StudyScreen() {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startedRef = useRef(false);
-  const callActive =
-    duo.callState === 'ACTIVE' ||
-    duo.callState === 'CONNECTING' ||
-    duo.callState === 'RECONNECTING';
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages, typing]);
+
+  useEffect(() => {
+    void duo.resumeSessionIfNeeded();
+  }, [duo.resumeSessionIfNeeded]);
 
   /** Opening the screen looks like an ongoing session: a target goes out, the assistant replies. */
   useEffect(() => {
@@ -187,25 +187,7 @@ export function StudyScreen() {
           <div ref={bottomRef} />
         </div>
 
-        {callActive && (
-          <div className="chat-study-cta study-done-bar">
-            <div className="min-w-0">
-              <p className="flex items-center gap-1.5 text-sm font-medium">
-                <PhoneOff size={15} className="text-emerald-300" /> Audio is running
-              </p>
-              <p className="muted text-[11px] leading-5">
-                {formatDuration(duo.callSeconds)} · {duo.micOn ? 'your mic is on' : 'your mic is muted'}
-              </p>
-            </div>
-            <Button
-              variant={duo.user?.role === 'GUEST' ? 'primary' : 'danger'}
-              className="study-button"
-              onClick={duo.user?.role === 'GUEST' ? duo.guestDone : duo.hangup}
-            >
-              {duo.user?.role === 'GUEST' ? 'DONE' : <><PhoneOff size={17} /> End call</>}
-            </Button>
-          </div>
-        )}
+        <CallPanel />
 
         <div className="chat-composer">
           <textarea

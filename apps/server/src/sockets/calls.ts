@@ -1,5 +1,5 @@
 import type { Server, Socket } from 'socket.io';
-import { CallStatus, PermissionStatus, Role } from '@prisma/client';
+import { CallStatus, Role } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { writeAudit } from '../lib/audit';
 import type { AuthUser } from '../middleware/auth';
@@ -27,22 +27,34 @@ export async function endCallsForDisconnect(userId: string, username: string) {
       where: { callId: call.id, userId },
       data: { leftAt: new Date() }
     });
-    await prisma.call.update({
-      where: { id: call.id },
-      data: { status: CallStatus.ENDED, endedAt: new Date() }
-    });
+
+    if (call.status === CallStatus.RINGING) {
+      await prisma.call.update({
+        where: { id: call.id },
+        data: { status: CallStatus.DECLINED, endedAt: new Date() }
+      });
+      for (const participant of call.participants) {
+        if (participant.userId === userId) {
+          emitToUser(participant.userId, 'call:left', { callId: call.id });
+        } else {
+          emitToUser(participant.userId, 'call:ended', {
+            callId: call.id,
+            reason: 'no-answer'
+          });
+        }
+      }
+      continue;
+    }
+
+    // An active session survives a dropped network, a refresh or a locked
+    // screen. The other side shows "reconnecting" and the session resumes as
+    // soon as the participant is back. Only the Host can end it.
     for (const participant of call.participants) {
-      if (participant.userId === userId) {
-        emitToUser(participant.userId, 'call:left', { callId: call.id });
-      } else {
-        emitToUser(participant.userId, 'call:participant-left', {
+      if (participant.userId !== userId) {
+        emitToUser(participant.userId, 'call:peer-offline', {
           callId: call.id,
           userId,
           username
-        });
-        emitToUser(participant.userId, 'call:ended', {
-          callId: call.id,
-          reason: 'participant-left'
         });
       }
     }
@@ -98,12 +110,20 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
       include: { participants: true }
     });
     if (existing) {
-      emitError(
-        existing.participants.some((participant) => participant.userId === other.id)
-          ? 'The other participant is already in a call.'
-          : 'You are already in a call.'
-      );
-      return;
+      const abandoned = existing.participants.every((participant) => participant.leftAt);
+      if (!abandoned) {
+        emitError(
+          existing.participants.some((participant) => participant.userId === other.id)
+            ? 'The other participant is already in a call.'
+            : 'You are already in a call.'
+        );
+        return;
+      }
+      // Nobody is connected to it any more; retire the stale session.
+      await prisma.call.update({
+        where: { id: existing.id },
+        data: { status: CallStatus.ENDED, endedAt: new Date() }
+      });
     }
 
     const call = await prisma.call.create({
@@ -186,27 +206,19 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
     const call = await callFor(payload?.callId);
     if (!call || !isParticipant(call)) return;
 
+    // Leaving the private surface pauses the session: it does not end it. The
+    // other side is told the participant went offline so the UI can show a
+    // reconnecting state without dropping the session.
     await prisma.callParticipant.updateMany({
       where: { callId: call.id, userId: user.id },
       data: { leftAt: new Date() }
     });
-    await prisma.call.update({
-      where: { id: call.id },
-      data: { status: CallStatus.ENDED, endedAt: new Date() }
-    });
-
     for (const participant of call.participants) {
-      if (participant.userId === user.id) {
-        emitToUser(participant.userId, 'call:left', { callId: call.id });
-      } else {
-        emitToUser(participant.userId, 'call:participant-left', {
+      if (participant.userId !== user.id) {
+        emitToUser(participant.userId, 'call:peer-offline', {
           callId: call.id,
           userId: user.id,
           username: user.username
-        });
-        emitToUser(participant.userId, 'call:ended', {
-          callId: call.id,
-          reason: 'participant-left'
         });
       }
     }
@@ -216,28 +228,19 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
     const call = await callFor(payload?.callId);
     if (!call || !isParticipant(call)) return;
 
+    // Only the Host can end a session for good. A Guest leaving only pauses
+    // their side, so the Host keeps the session open.
     if (user.role !== Role.HOST) {
-      // A Guest can leave independently but cannot force-end the Host's client.
       await prisma.callParticipant.updateMany({
         where: { callId: call.id, userId: user.id },
         data: { leftAt: new Date() }
       });
-      await prisma.call.update({
-        where: { id: call.id },
-        data: { status: CallStatus.ENDED, endedAt: new Date() }
-      });
       for (const participant of call.participants) {
-        if (participant.userId === user.id) {
-          emitToUser(participant.userId, 'call:left', { callId: call.id });
-        } else {
-          emitToUser(participant.userId, 'call:participant-left', {
+        if (participant.userId !== user.id) {
+          emitToUser(participant.userId, 'call:peer-offline', {
             callId: call.id,
             userId: user.id,
             username: user.username
-          });
-          emitToUser(participant.userId, 'call:ended', {
-            callId: call.id,
-            reason: 'participant-left'
           });
         }
       }
@@ -357,35 +360,19 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
       }
     });
     if (!call) {
-      emitError('No active call.');
+      emitError('No active session.');
       return;
     }
 
     const target = call.participants.find((participant) => participant.userId !== user.id);
     if (!target) return;
 
-    const permission = await prisma.permission.findFirst({
-      where: {
-        name: 'REMOTE_MIC_CONTROL',
-        requestedBy: user.id,
-        grantedBy: target.userId,
-        status: PermissionStatus.GRANTED
-      }
-    });
+    // The Guest owns what they hear: they may mute or unmute the Host at any
+    // time. The Host's microphone stays off by default until that happens.
     const enabled = Boolean(payload?.enabled);
-    // A Guest may always mute the Host microphone (the Done button sends this
-    // request through the backend). Unmuting still needs the Host's consent.
-    const guestMute = user.role === Role.GUEST && enabled === false;
-    const permitted = user.role === Role.HOST
-      ? Boolean(permission)
-      : guestMute || Boolean(permission);
-
-    if (!permitted) {
-      emitError('The other participant has not granted microphone control.');
-      return;
-    }
-
     emitToUser(target.userId, 'call:remote-mic', { enabled, by: user.id });
+    emitToUser(target.userId, 'call:mic-status', { enabled, userId: target.userId });
+    emitToUser(user.id, 'call:mic-status', { enabled, userId: target.userId });
     emitToUser(user.id, 'call:remote-mic:sent', { enabled, targetUserId: target.userId });
   });
 }
