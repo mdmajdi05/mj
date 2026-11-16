@@ -1885,7 +1885,8 @@ export function useDuoApp() {
       file: File,
       replyToId?: string | null,
       onProgress?: (percent: number) => void,
-      content = ''
+      content = '',
+      signal?: AbortSignal
     ) => {
       const mime = file.type || '';
       const kind = mime.startsWith('image/')
@@ -1897,14 +1898,14 @@ export function useDuoApp() {
             : 'FILE';
       const limits: Record<string, number> = {
         IMAGE: 50 * 1024 * 1024,
-        VIDEO: 200 * 1024 * 1024,
+        VIDEO: 500 * 1024 * 1024,
         AUDIO: 25 * 1024 * 1024,
         FILE: 50 * 1024 * 1024
       };
       if (file.size > limits[kind]) {
         showError(
           kind === 'VIDEO'
-            ? 'Videos must be 200 MB or smaller.'
+            ? 'Videos must be 500 MB or smaller.'
             : kind === 'IMAGE'
               ? 'Images must be 50 MB or smaller.'
               : kind === 'AUDIO'
@@ -1920,9 +1921,15 @@ export function useDuoApp() {
 
       try {
         const media = await new Promise<{ id: string }>((resolve, reject) => {
+          if (signal?.aborted) {
+            reject(new Error('Upload cancelled.'));
+            return;
+          }
           const request = new XMLHttpRequest();
           request.open('POST', `${API}/api/chat/media`);
           request.withCredentials = true;
+          const stop = () => request.abort();
+          signal?.addEventListener('abort', stop, { once: true });
           request.setRequestHeader(
             'Content-Type',
             kind === 'FILE' ? 'application/octet-stream' : mime || 'application/octet-stream'
@@ -1935,9 +1942,16 @@ export function useDuoApp() {
             if (!event.lengthComputable || !onProgress) return;
             onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)));
           };
-          request.onerror = () => reject(new Error('Upload failed. Check your connection.'));
-          request.onabort = () => reject(new Error('Upload cancelled.'));
+          request.onerror = () => {
+            signal?.removeEventListener('abort', stop);
+            reject(new Error('Upload failed. Check your connection.'));
+          };
+          request.onabort = () => {
+            signal?.removeEventListener('abort', stop);
+            reject(new Error('Upload cancelled.'));
+          };
           request.onload = () => {
+            signal?.removeEventListener('abort', stop);
             let data: any = {};
             try {
               data = JSON.parse(request.responseText || '{}');
@@ -1945,6 +1959,14 @@ export function useDuoApp() {
               data = {};
             }
             if (request.status < 200 || request.status >= 300 || !data?.id) {
+              if (request.status === 413) {
+                reject(
+                  new Error(
+                    'This file is too large for the server. Try a smaller file or a shorter video.'
+                  )
+                );
+                return;
+              }
               reject(new Error(data?.error || `Upload failed (${request.status})`));
               return;
             }
@@ -1954,14 +1976,35 @@ export function useDuoApp() {
           request.send(file);
         });
 
+        if (signal?.aborted) return false;
+
         const socket = socketRef.current;
-        if (!socket?.connected) throw new Error('Live connection is not ready');
-        socket.emit('message:send', {
-          content: content.trim(),
-          destination: 'CHAT',
-          attachment: { id: media.id },
-          replyToId: replyToId ?? null
+        if (socket?.connected) {
+          socket.emit('message:send', {
+            content: content.trim(),
+            destination: 'CHAT',
+            attachment: { id: media.id },
+            replyToId: replyToId ?? null
+          });
+          return true;
+        }
+
+        // Socket briefly unavailable: deliver through the REST endpoint so the
+        // upload is not wasted and the message still reaches both accounts.
+        const created = await api<Message>('/chat/messages', {
+          method: 'POST',
+          body: JSON.stringify({
+            content: content.trim(),
+            destination: 'CHAT',
+            attachmentId: media.id,
+            replyToId: replyToId ?? null
+          })
         });
+        setMessages((current) =>
+          current.some((message) => message.id === created.id)
+            ? current
+            : [...current, created]
+        );
         return true;
       } catch (cause) {
         showError(cause instanceof Error ? cause.message : 'Attachment could not be sent');

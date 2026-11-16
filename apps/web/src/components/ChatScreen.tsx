@@ -26,6 +26,7 @@ import { CallOrb, CallPanel } from '@/components/CallControls';
 import { ChatComposer } from '@/components/ChatComposer';
 import type { PendingAttachment } from '@/components/ChatComposer';
 import { holdMediaInteraction } from '@/lib/mediaGuard';
+import { prepareImageForUpload } from '@/lib/imageProcessing';
 import {
   AudioBubble,
   DocumentBubble,
@@ -41,6 +42,9 @@ type ConfirmAction =
   | { type: 'bulk' }
   | { type: 'mine' }
   | null;
+
+/** Same profile mark used by the Study Assistant header. */
+const ASSISTANT_AVATAR = '✦';
 
 type DisplayItem = {
   key: string;
@@ -127,7 +131,6 @@ export function ChatScreen() {
     return isHost ? 'Guest' : 'Host';
   }, [activeContact, chatMessages, duo.user?.id, isHost]);
 
-  const otherInitial = otherName.charAt(0).toUpperCase();
   const peerLastSeen = activeContact?.lastSeenAt ?? duo.peerLastSeenAt;
   const peerOnline = activeContact ? activeContact.online : duo.otherOnline;
 
@@ -209,9 +212,13 @@ export function ChatScreen() {
 
   const pendingRef = useRef<PendingAttachment[]>([]);
   pendingRef.current = pending;
+  const uploadAbortRef = useRef(new Map<string, AbortController>());
+  const uploadRunRef = useRef(0);
   useEffect(() => {
     return () => {
       pendingRef.current.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+      uploadAbortRef.current.forEach((controller) => controller.abort());
+      uploadAbortRef.current.clear();
     };
   }, []);
 
@@ -286,6 +293,8 @@ export function ChatScreen() {
   }
 
   function discardPending(id: string) {
+    uploadAbortRef.current.get(id)?.abort();
+    uploadAbortRef.current.delete(id);
     setPending((current) => {
       const item = current.find((entry) => entry.id === id);
       if (item) URL.revokeObjectURL(item.previewUrl);
@@ -294,36 +303,53 @@ export function ChatScreen() {
   }
 
   function cancelPending() {
-    if (uploading) return;
+    uploadRunRef.current += 1;
+    uploadAbortRef.current.forEach((controller) => controller.abort());
+    uploadAbortRef.current.clear();
     setPending((current) => {
       current.forEach((item) => URL.revokeObjectURL(item.previewUrl));
       return [];
     });
+    setUploading(false);
   }
 
   async function uploadAttachments(items: PendingAttachment[], caption: string) {
     if (!items.length) return;
+    const run = ++uploadRunRef.current;
     setUploading(true);
     let captionSent = false;
     let sentAny = false;
     const replyId = replyTarget?.id ?? null;
 
     for (const item of items) {
+      if (run !== uploadRunRef.current) break;
       // Keep the privacy guard quiet for long uploads as well.
       holdMediaInteraction(10 * 60 * 1000);
       updatePending(item.id, { status: 'uploading', progress: 0, error: undefined });
+
+      // Resize/re-encode large camera and gallery photos before upload. Video
+      // and documents are sent as-is.
+      const uploadFile = await prepareImageForUpload(item.file);
+      if (run !== uploadRunRef.current) break;
+      const controller = new AbortController();
+      uploadAbortRef.current.set(item.id, controller);
+
       const sent = await duo.sendMedia(
-        item.file,
+        uploadFile,
         replyId,
         (progress) => updatePending(item.id, { progress }),
-        !captionSent ? caption : ''
+        !captionSent ? caption : '',
+        controller.signal
       );
+      uploadAbortRef.current.delete(item.id);
+      if (run !== uploadRunRef.current) break;
+
       if (sent) {
         sentAny = true;
         if (!captionSent && caption) captionSent = true;
         discardPending(item.id);
         scrollToBottom();
-      } else {
+      } else if (!controller.signal.aborted) {
         updatePending(item.id, {
           status: 'error',
           error: 'Upload failed. Tap retry.',
@@ -332,7 +358,7 @@ export function ChatScreen() {
       }
     }
 
-    setUploading(false);
+    if (run === uploadRunRef.current) setUploading(false);
     if (sentAny) {
       if (captionSent) setDraft('');
       setReplyTarget(null);
@@ -558,7 +584,7 @@ export function ChatScreen() {
               </button>
             )}
             <div className="chat-person">
-              <span className="chat-avatar">{otherInitial}</span>
+              <span className="chat-avatar">{ASSISTANT_AVATAR}</span>
               <div className="min-w-0 text-left">
                 <p className="truncate text-sm font-semibold">{otherName}</p>
                 <p className="muted flex items-center gap-1.5 text-[11px]">
@@ -692,7 +718,6 @@ export function ChatScreen() {
                   key={item.key}
                   item={item}
                   mine={mine}
-                  otherInitial={otherInitial}
                   otherName={otherName}
                   userId={duo.user?.id || ''}
                   selected={selected}
@@ -740,7 +765,7 @@ export function ChatScreen() {
             )}
             {duo.peerTyping && (
               <div className="typing-row">
-                <span className="assistant-avatar small">{otherInitial}</span>
+                <span className="assistant-avatar small">{ASSISTANT_AVATAR}</span>
                 <div className="typing-bubble">
                   <span className="typing-dots" aria-label={`${otherName} is typing`}>
                     <span />
@@ -941,7 +966,6 @@ export function ChatScreen() {
 function MessageRow({
   item,
   mine,
-  otherInitial,
   otherName,
   userId,
   selected,
@@ -957,7 +981,6 @@ function MessageRow({
 }: {
   item: DisplayItem;
   mine: boolean;
-  otherInitial: string;
   otherName: string;
   userId: string;
   selected: boolean;
@@ -1115,7 +1138,7 @@ function MessageRow({
     </div>
   ) : (
     <div id={`msg-${item.key}`} className="study-ai-row chat-ai-row" data-message-id={message.id}>
-      <span className="assistant-avatar small">{otherInitial}</span>
+      <span className="assistant-avatar small">{ASSISTANT_AVATAR}</span>
       {content}
     </div>
   );

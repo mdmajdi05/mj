@@ -75,32 +75,50 @@ export function MediaGrid({
 
   return (
     <div className={`media-grid media-grid-${layout}`}>
-      {shown.map((message, index) => (
-        <button
-          key={message.id}
-          type="button"
-          className="media-tile"
-          onClick={(event) => {
-            event.stopPropagation();
-            onOpen(messages, index);
-          }}
-          aria-label={isVideo(message) ? 'Play video' : 'Open photo'}
-        >
-          {isImage(message) ? (
-            <img
-              src={mediaUrl(message.attachmentId!)}
-              alt={message.attachmentName || 'Photo'}
-              loading="lazy"
-              className="media-tile-media"
-            />
-          ) : (
-            <VideoTile message={message} />
-          )}
-          {extra > 0 && index === shown.length - 1 && (
-            <span className="media-tile-more">+{extra}</span>
-          )}
-        </button>
-      ))}
+      {shown.map((message, index) => {
+        const content = (
+          <>
+            {isImage(message) ? (
+              <img
+                src={mediaUrl(message.attachmentId!)}
+                alt={message.attachmentName || 'Photo'}
+                loading="lazy"
+                className="media-tile-media"
+              />
+            ) : (
+              <VideoTile message={message} />
+            )}
+            {extra > 0 && index === shown.length - 1 && (
+              <span className="media-tile-more">+{extra}</span>
+            )}
+          </>
+        );
+
+        // Photos stay inline in the conversation. Opening them full-screen is
+        // intentionally disabled; only videos need a player overlay.
+        if (!isVideo(message)) {
+          return (
+            <div key={message.id} className="media-tile" aria-label="Photo">
+              {content}
+            </div>
+          );
+        }
+
+        return (
+          <button
+            key={message.id}
+            type="button"
+            className="media-tile"
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpen(messages, index);
+            }}
+            aria-label="Play video"
+          >
+            {content}
+          </button>
+        );
+      })}
     </div>
   );
 }

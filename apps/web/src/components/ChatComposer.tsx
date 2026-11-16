@@ -103,6 +103,9 @@ export function ChatComposer({
   const [cameraBusy, setCameraBusy] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraFacing, setCameraFacing] = useState<'environment' | 'user'>('environment');
+  const [cameraPermission, setCameraPermission] = useState<
+    'unknown' | 'prompt' | 'granted' | 'denied'
+  >('unknown');
   const [captured, setCaptured] = useState<{ file: File; url: string } | null>(null);
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
@@ -121,6 +124,7 @@ export function ChatComposer({
   const fileRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
+  const cameraRequestRef = useRef(0);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordStreamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -227,39 +231,74 @@ export function ChatComposer({
     if (files.length) onMediaSelect(files);
   }
 
+  async function readCameraPermission(): Promise<'unknown' | 'prompt' | 'granted' | 'denied'> {
+    try {
+      if (!navigator.permissions?.query) return 'unknown';
+      const status = await navigator.permissions.query({
+        name: 'camera' as PermissionName
+      });
+      return status.state as 'prompt' | 'granted' | 'denied';
+    } catch {
+      // Firefox/Safari expose no camera permission query; treat as unknown.
+      return 'unknown';
+    }
+  }
+
   async function startCamera(facing: 'environment' | 'user') {
+    const token = ++cameraRequestRef.current;
     setCameraError('');
     setCameraReady(false);
     setCameraBusy(true);
-    cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
-    cameraStreamRef.current = null;
+    stopCamera();
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
-        throw new Error('This browser cannot open the camera. Pick a photo from the gallery instead.');
+        throw new Error(
+          'This browser cannot open the camera. Use “Pick photo instead” to choose from the gallery.'
+        );
       }
       if (!window.isSecureContext && window.location.hostname !== 'localhost') {
         throw new Error('Camera access needs HTTPS. Open the site over a secure connection.');
       }
+
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: facing } },
+        video: {
+          facingMode: { ideal: facing },
+          width: { ideal: 1920 },
+          height: { ideal: 1440 }
+        },
         audio: false
       });
+
+      // A newer request (or closing the modal) invalidated this one.
+      if (token !== cameraRequestRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
       cameraStreamRef.current = stream;
       setCameraFacing(facing);
+      setCameraPermission('granted');
       setCameraReady(true);
     } catch (cause) {
+      if (token !== cameraRequestRef.current) return;
       const error = cause as DOMException;
-      const message =
-        error?.name === 'NotAllowedError' || error?.name === 'SecurityError'
-          ? 'Camera permission is blocked. Tap “Try again” and choose Allow, or enable Camera in your browser site settings.'
-          : error?.name === 'NotFoundError'
-            ? 'No camera was found on this device.'
-            : error?.name === 'NotReadableError'
-              ? 'The camera is already in use by another app. Close it and try again.'
-              : error?.message || 'Camera could not be started.';
+      const state = await readCameraPermission();
+      setCameraPermission(state);
+
+      const denied =
+        error?.name === 'NotAllowedError' ||
+        error?.name === 'SecurityError' ||
+        state === 'denied';
+      const message = denied
+        ? 'Camera permission is blocked. Allow Camera for this site in Chrome, then tap Try again. On Android/iOS also check the browser app permission in system Settings.'
+        : error?.name === 'NotFoundError' || error?.name === 'OverconstrainedError'
+          ? 'No camera was found on this device. Use “Pick photo instead” to choose from the gallery.'
+          : error?.name === 'NotReadableError'
+            ? 'The camera is already in use by another app. Close the other app and tap Try again.'
+            : error?.message || 'Camera could not be started.';
       setCameraError(message);
     } finally {
-      setCameraBusy(false);
+      if (token === cameraRequestRef.current) setCameraBusy(false);
     }
   }
 
@@ -274,10 +313,12 @@ export function ChatComposer({
   function stopCamera() {
     cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
     cameraStreamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
     setCameraReady(false);
   }
 
   function closeCamera() {
+    cameraRequestRef.current += 1;
     stopCamera();
     setCameraOpen(false);
     setCameraError('');
@@ -516,7 +557,6 @@ export function ChatComposer({
                 type="button"
                 className="composer-pending-cancel"
                 onClick={onCancelPending}
-                disabled={uploading}
               >
                 Cancel
               </button>
@@ -575,7 +615,6 @@ export function ChatComposer({
                   type="button"
                   className="composer-pending-action"
                   onClick={() => onRemovePending?.(item.id)}
-                  disabled={uploading}
                   aria-label="Remove attachment"
                 >
                   <X size={13} />
@@ -749,13 +788,24 @@ export function ChatComposer({
               {cameraError && (
                 <div className="camera-error" role="alert">
                   <p>{cameraError}</p>
+                  {cameraPermission === 'denied' && (
+                    <ol className="camera-guide">
+                      <li>Tap the lock / site icon in the address bar.</li>
+                      <li>Open Site settings → Permissions → Camera.</li>
+                      <li>Choose Allow, then return here.</li>
+                      <li>
+                        On Android/iOS also allow Camera for Chrome in the system app settings.
+                      </li>
+                    </ol>
+                  )}
                   <div className="mt-2 flex flex-wrap gap-2">
                     <button
                       type="button"
                       className="composer-menu-fallback"
+                      disabled={cameraBusy}
                       onClick={() => void startCamera(cameraFacing)}
                     >
-                      Try again
+                      {cameraBusy ? 'Requesting…' : 'Try again'}
                     </button>
                     <button
                       type="button"

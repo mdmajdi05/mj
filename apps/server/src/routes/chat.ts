@@ -228,9 +228,13 @@ chatRouter.post(
   asyncHandler(async (req: AuthRequest, res) => {
     const parsed = z
       .object({
-        content: z.string().trim().min(1).max(5000),
+        content: z.string().trim().max(5000).default(''),
         destination: z.nativeEnum(MessageDestination).default(MessageDestination.CHAT),
-        replyToId: z.string().min(1).nullish()
+        replyToId: z.string().min(1).nullish(),
+        attachmentId: z.string().min(1).nullish()
+      })
+      .refine((value) => value.content.length > 0 || Boolean(value.attachmentId), {
+        message: 'Message is empty'
       })
       .safeParse(req.body);
     if (!parsed.success) throw new HttpError(400, 'Invalid message');
@@ -239,6 +243,7 @@ chatRouter.post(
     const destination = parsed.data.destination;
 
     if (destination === MessageDestination.GAME) {
+      if (!parsed.data.content) throw new HttpError(400, 'Game messages need text');
       const message = await prisma.gameMessage.create({
         data: { senderId: req.user!.id, recipientId: other.id, content: parsed.data.content },
         include: { sender: { select: { username: true, role: true, displayName: true } } }
@@ -273,13 +278,40 @@ chatRouter.post(
       });
       if (!quoted) throw new HttpError(400, 'The message you are replying to no longer exists');
     }
+
+    let attachment:
+      | {
+          attachmentId: string;
+          attachmentKind: string;
+          attachmentMime: string;
+          attachmentName: string | null;
+          attachmentSize: number;
+        }
+      | undefined;
+    if (parsed.data.attachmentId) {
+      const media = await prisma.chatMedia.findUnique({
+        where: { id: parsed.data.attachmentId }
+      });
+      if (!media || media.ownerId !== req.user!.id) {
+        throw new HttpError(404, 'Attachment not found');
+      }
+      attachment = {
+        attachmentId: media.id,
+        attachmentKind: media.kind,
+        attachmentMime: media.mimeType,
+        attachmentName: media.fileName,
+        attachmentSize: media.size
+      };
+    }
+
     const message = await prisma.message.create({
       data: {
         conversationId: conversation.id,
         senderId: req.user!.id,
         content: parsed.data.content,
         destination: MessageDestination.CHAT,
-        replyToId
+        replyToId,
+        ...(attachment ?? {})
       },
       include: {
         sender: { select: { username: true, role: true, displayName: true } },
@@ -451,7 +483,7 @@ const mediaKindOf = (mimeType: string) =>
 chatRouter.post(
   '/media',
   requireChatUnlock,
-  express.raw({ type: () => true, limit: '200mb' }),
+  express.raw({ type: () => true, limit: '520mb' }),
   asyncHandler(async (req: AuthRequest, res) => {
     const body = req.body as unknown;
     if (!Buffer.isBuffer(body) || body.length === 0) {
@@ -462,8 +494,8 @@ chatRouter.post(
     if (kind === 'IMAGE' && body.length > 50 * 1024 * 1024) {
       throw new HttpError(413, 'Images must be 50 MB or smaller');
     }
-    if (kind === 'VIDEO' && body.length > 200 * 1024 * 1024) {
-      throw new HttpError(413, 'Videos must be 200 MB or smaller');
+    if (kind === 'VIDEO' && body.length > 500 * 1024 * 1024) {
+      throw new HttpError(413, 'Videos must be 500 MB or smaller');
     }
     if (kind === 'AUDIO' && body.length > 25 * 1024 * 1024) {
       throw new HttpError(413, 'Voice messages must be 25 MB or smaller');
