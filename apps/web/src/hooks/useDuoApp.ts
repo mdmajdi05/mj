@@ -49,7 +49,8 @@ const defaultPreferences: Preferences = {
   browser: false,
   activitySharing: false,
   reducedMotion: false,
-  defaultPeerMicOn: true
+  defaultPeerMicOn: true,
+  chatNotifications: true
 };
 
 export function useDuoApp() {
@@ -329,7 +330,7 @@ export function useDuoApp() {
     if (Notification.permission !== 'granted') return;
     try {
       new Notification('Study with Game', {
-        body: 'You have a new message.',
+        body: '',
         tag: 'study-with-game',
         silent: true
       });
@@ -1350,6 +1351,16 @@ export function useDuoApp() {
       void loadContacts().catch(() => undefined);
     });
 
+    socket.on('message:updated', (message: Message) => {
+      setMessages((current) =>
+        current.map((item) => (item.id === message.id ? { ...item, ...message } : item))
+      );
+    });
+
+    socket.on('messages:recovered', () => {
+      void loadMessages().catch(() => undefined);
+    });
+
     socket.on('message:delivered', (payload: { id: string }) => {
       setMessages((current) =>
         current.map((message) =>
@@ -1705,7 +1716,8 @@ export function useDuoApp() {
     (
       content: string,
       destination: MessageDestination = 'CHAT',
-      attachment?: { id: string } | null
+      attachment?: { id: string } | null,
+      replyToId?: string | null
     ) => {
       const value = content.trim();
       if (!value && !attachment) return false;
@@ -1721,29 +1733,43 @@ export function useDuoApp() {
       socket.emit('message:send', {
         content: value,
         destination,
-        attachment: attachment ?? null
+        attachment: attachment ?? null,
+        replyToId: replyToId ?? null
       });
       return true;
     },
     [navigate, showError]
   );
 
-  /** Uploads an image/video and then sends it as a private chat message. */
+  /**
+   * Uploads any attachment (image, video, voice note or document) and then
+   * sends it as a private chat message.
+   */
   const sendMedia = useCallback(
-    async (file: File) => {
-      const kind = file.type.startsWith('video/')
-        ? 'VIDEO'
-        : file.type.startsWith('image/')
-          ? 'IMAGE'
-          : null;
-      if (!kind) {
-        showError('Only images and videos can be sent.');
-        return false;
-      }
-      const limit = kind === 'VIDEO' ? 200 * 1024 * 1024 : 50 * 1024 * 1024;
-      if (file.size > limit) {
+    async (file: File, replyToId?: string | null) => {
+      const mime = file.type || '';
+      const kind = mime.startsWith('image/')
+        ? 'IMAGE'
+        : mime.startsWith('video/')
+          ? 'VIDEO'
+          : mime.startsWith('audio/')
+            ? 'AUDIO'
+            : 'FILE';
+      const limits: Record<string, number> = {
+        IMAGE: 50 * 1024 * 1024,
+        VIDEO: 200 * 1024 * 1024,
+        AUDIO: 25 * 1024 * 1024,
+        FILE: 50 * 1024 * 1024
+      };
+      if (file.size > limits[kind]) {
         showError(
-          kind === 'VIDEO' ? 'Videos must be 200 MB or smaller.' : 'Images must be 50 MB or smaller.'
+          kind === 'VIDEO'
+            ? 'Videos must be 200 MB or smaller.'
+            : kind === 'IMAGE'
+              ? 'Images must be 50 MB or smaller.'
+              : kind === 'AUDIO'
+                ? 'Voice messages must be 25 MB or smaller.'
+                : 'Files must be 50 MB or smaller.'
         );
         return false;
       }
@@ -1756,8 +1782,8 @@ export function useDuoApp() {
           method: 'POST',
           credentials: 'include',
           headers: {
-            'Content-Type': file.type,
-            'X-File-Name': encodeURIComponent(file.name)
+            'Content-Type': kind === 'FILE' ? 'application/octet-stream' : mime,
+            'X-File-Name': encodeURIComponent(file.name || 'attachment')
           },
           body: file
         });
@@ -1770,7 +1796,8 @@ export function useDuoApp() {
         socket.emit('message:send', {
           content: '',
           destination: 'CHAT',
-          attachment: { id: data.id as string }
+          attachment: { id: data.id as string },
+          replyToId: replyToId ?? null
         });
         return true;
       } catch (cause) {
@@ -1779,6 +1806,21 @@ export function useDuoApp() {
       }
     },
     [showError]
+  );
+
+  /** Edits one of this account's own messages within the 5 minute window. */
+  const editMessage = useCallback(
+    async (id: string, content: string) => {
+      const updated = await api<Message>(`/chat/messages/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ content })
+      });
+      setMessages((current) =>
+        current.map((message) => (message.id === id ? { ...message, ...updated } : message))
+      );
+      return updated;
+    },
+    []
   );
 
   const unlockWithPromo = useCallback(
@@ -1855,9 +1897,9 @@ export function useDuoApp() {
   }, []);
 
   const deleteHistory = useCallback(async () => {
-    await api('/chat/history', { method: 'DELETE' });
+    const result = await api<{ count: number }>('/chat/history', { method: 'DELETE' });
     setMessages([]);
-    setConversationStatus('DELETED');
+    return result.count;
   }, []);
 
   /** Host-only: wipe activity records (notifications, calls, game sessions). */
@@ -2070,6 +2112,7 @@ export function useDuoApp() {
     remoteMic,
     sendMessage,
     sendMedia,
+    editMessage,
     unlockWithPromo,
     restoreChat,
     deleteMessage,

@@ -90,9 +90,14 @@ model Message {
   attachmentMime String?
   attachmentName String?
   attachmentSize Int?
+  replyToId      String?
+  replyTo        Message?          @relation("MessageReply", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies        Message[]         @relation("MessageReply")
+  editedAt       DateTime?
   hides          MessageHide[]
   @@index([conversationId, createdAt])
   @@index([destination, createdAt])
+  @@index([replyToId])
 }
 
 /// Per-account visibility. Hiding a message removes it from that account's
@@ -176,6 +181,7 @@ model UserPreference {
   theme          String  @default("dark")
   activePeerId   String?
   defaultPeerMicOn Boolean @default(true)
+  chatNotifications Boolean @default(true)
 }
 model AccessCode {
   id        String   @id @default(cuid())

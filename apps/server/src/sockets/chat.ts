@@ -20,6 +20,7 @@ type ChatPayload = {
   content?: string;
   destination?: MessageDestination;
   attachment?: { id?: string } | null;
+  replyToId?: string | null;
 };
 
 const screenAllowed = new Set([
@@ -54,6 +55,14 @@ async function chatUnlocked(user: AuthUser) {
 
 async function otherUser(userId: string) {
   return peerFor(userId);
+}
+
+async function wantsChatNotifications(userId: string) {
+  const preference = await prisma.userPreference.findUnique({
+    where: { userId },
+    select: { chatNotifications: true }
+  });
+  return preference?.chatNotifications ?? true;
 }
 
 export function registerChatSocketHandlers(io: Server, socket: Socket) {
@@ -127,15 +136,17 @@ export function registerChatSocketHandlers(io: Server, socket: Socket) {
         include: { sender: { select: { username: true, role: true, displayName: true } } }
       });
       emitToUser(other.id, 'game:message:new', message);
-      await notifyUser({
-        userId: other.id,
-        actorId: user.id,
-        eventType: 'GAME_MESSAGE',
-        payload: { gameMessageId: message.id },
-        butterfly: true,
-        push: true,
-        dedupeKey: `game:${message.id}:${other.id}`
-      });
+      if (await wantsChatNotifications(other.id)) {
+        await notifyUser({
+          userId: other.id,
+          actorId: user.id,
+          eventType: 'GAME_MESSAGE',
+          payload: { gameMessageId: message.id },
+          butterfly: true,
+          push: true,
+          dedupeKey: `game:${message.id}:${other.id}`
+        });
+      }
       return;
     }
 
@@ -151,6 +162,23 @@ export function registerChatSocketHandlers(io: Server, socket: Socket) {
       return;
     }
 
+    let replyToId: string | null = null;
+    if (typeof payload?.replyToId === 'string' && payload.replyToId) {
+      const quoted = await prisma.message.findFirst({
+        where: {
+          id: payload.replyToId,
+          conversationId: conversation.id,
+          deletedAt: null
+        },
+        select: { id: true }
+      });
+      if (!quoted) {
+        emitError('The message you are replying to no longer exists');
+        return;
+      }
+      replyToId = quoted.id;
+    }
+
     const delivered = isOnline(other.id);
     const message = await prisma.message.create({
       data: {
@@ -159,24 +187,38 @@ export function registerChatSocketHandlers(io: Server, socket: Socket) {
         content,
         destination: MessageDestination.CHAT,
         deliveredAt: delivered ? new Date() : null,
+        replyToId,
         ...(attachment ?? {})
       },
-      include: { sender: { select: { username: true, role: true, displayName: true } } }
+      include: {
+        sender: { select: { username: true, role: true, displayName: true } },
+        replyTo: {
+          select: {
+            id: true,
+            content: true,
+            senderId: true,
+            attachmentKind: true,
+            attachmentName: true
+          }
+        }
+      }
     });
 
     emitToUser(user.id, 'message:new', message);
     emitToUser(other.id, 'message:new', message);
     if (delivered) emitToUser(user.id, 'message:delivered', { id: message.id });
 
-    await notifyUser({
-      userId: other.id,
-      actorId: user.id,
-      eventType: 'NEW_MESSAGE',
-      payload: { messageId: message.id },
-      butterfly: true,
-      push: true,
-      dedupeKey: `message:${message.id}:${other.id}`
-    });
+    if (await wantsChatNotifications(other.id)) {
+      await notifyUser({
+        userId: other.id,
+        actorId: user.id,
+        eventType: 'NEW_MESSAGE',
+        payload: { messageId: message.id },
+        butterfly: true,
+        push: true,
+        dedupeKey: `message:${message.id}:${other.id}`
+      });
+    }
   };
 
   socket.on('message:send', (payload: ChatPayload) => {

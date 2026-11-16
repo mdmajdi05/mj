@@ -7,32 +7,56 @@ import {
   Check,
   CheckCheck,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   Eye,
-  ImagePlus,
   ListChecks,
   MessageCircle,
   MoreVertical,
-  Send,
+  Pencil,
+  Reply,
   Trash2,
   X
 } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
-import { API } from '@/lib/api';
 import { formatDateTime, formatFileSize, formatLastSeen, formatTime } from '@/lib/utils';
 import type { Message } from '@/lib/types';
 import { Button, EmptyState, Modal } from '@/components/ui';
 import { CallOrb, CallPanel } from '@/components/CallControls';
+import { ChatComposer } from '@/components/ChatComposer';
+import {
+  AudioBubble,
+  DocumentBubble,
+  MediaGrid,
+  MediaLightbox,
+  attachmentLabel
+} from '@/components/ChatMedia';
 
 type ConfirmAction =
   | { type: 'archive' }
   | { type: 'history' }
-  | { type: 'message'; id: string }
+  | { type: 'message'; ids: string[] }
   | { type: 'bulk' }
   | { type: 'mine' }
   | null;
 
-const mediaUrl = (id: string) => `${API}/api/chat/media/${id}`;
+type DisplayItem = {
+  key: string;
+  messages: Message[];
+  media: boolean;
+};
+
+type ActionMenu = {
+  ids: string[];
+  message: Message;
+  editable: boolean;
+  x: number;
+  y: number;
+} | null;
+
+const EDIT_WINDOW = 5 * 60 * 1000;
+const isMediaOnly = (message: Message) =>
+  (message.attachmentKind === 'IMAGE' || message.attachmentKind === 'VIDEO') && !message.content;
 
 export function ChatScreen() {
   const duo = useDuo();
@@ -43,10 +67,20 @@ export function ChatScreen() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [mobileConversationOpen, setMobileConversationOpen] = useState(false);
+  const [replyTarget, setReplyTarget] = useState<Message | null>(null);
+  const [editing, setEditing] = useState<Message | null>(null);
+  const [actionMenu, setActionMenu] = useState<ActionMenu>(null);
+  const [lightbox, setLightbox] = useState<{ items: Message[]; index: number } | null>(null);
+  const [atBottom, setAtBottom] = useState(true);
+  const [newCount, setNewCount] = useState(0);
+  const [flashId, setFlashId] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
-  const fileRef = useRef<HTMLInputElement | null>(null);
   const toolsRef = useRef<HTMLDivElement | null>(null);
+  const atBottomRef = useRef(true);
+  const lastLengthRef = useRef(0);
+  const loadedOnceRef = useRef(false);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!toolsOpen) return;
@@ -62,6 +96,13 @@ export function ChatScreen() {
       window.removeEventListener('touchstart', handler);
     };
   }, [toolsOpen]);
+
+  useEffect(() => {
+    if (!actionMenu) return;
+    const close = () => setActionMenu(null);
+    window.addEventListener('scroll', close, true);
+    return () => window.removeEventListener('scroll', close, true);
+  }, [actionMenu]);
 
   const isHost = duo.user?.role === 'HOST';
 
@@ -86,6 +127,32 @@ export function ChatScreen() {
   const peerLastSeen = activeContact?.lastSeenAt ?? duo.peerLastSeenAt;
   const peerOnline = activeContact ? activeContact.online : duo.otherOnline;
 
+  /** Consecutive photos/videos from the same account form one smart grid. */
+  const displayItems = useMemo(() => {
+    const items: DisplayItem[] = [];
+    let bucket: Message[] = [];
+    const flush = () => {
+      if (!bucket.length) return;
+      items.push({ key: bucket[0].id, messages: bucket, media: true });
+      bucket = [];
+    };
+    for (const message of chatMessages) {
+      if (isMediaOnly(message)) {
+        if (bucket.length && bucket[bucket.length - 1].senderId === message.senderId) {
+          bucket.push(message);
+        } else {
+          flush();
+          bucket = [message];
+        }
+      } else {
+        flush();
+        items.push({ key: message.id, messages: [message], media: false });
+      }
+    }
+    flush();
+    return items;
+  }, [chatMessages]);
+
   useEffect(() => {
     // Coming back after a refresh or network drop: restore the audio session
     // quietly. Nothing is audible until the offer is explicitly unmuted.
@@ -94,14 +161,34 @@ export function ChatScreen() {
     return () => window.clearTimeout(retry);
   }, [duo.resumeSessionIfNeeded]);
 
+  function scrollToBottom(behavior: ScrollBehavior = 'smooth') {
+    bottomRef.current?.scrollIntoView({ behavior, block: 'end' });
+    setNewCount(0);
+    setAtBottom(true);
+    atBottomRef.current = true;
+  }
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [chatMessages.length, duo.peerTyping]);
+    const length = chatMessages.length;
+    const previous = lastLengthRef.current;
+    lastLengthRef.current = length;
+    if (!loadedOnceRef.current && length > 0) {
+      loadedOnceRef.current = true;
+      scrollToBottom('auto');
+      return;
+    }
+    if (length > previous) {
+      if (atBottomRef.current) scrollToBottom('smooth');
+      else setNewCount((count) => count + (length - previous));
+    }
+  }, [chatMessages.length]);
+
+  useEffect(() => {
+    if (duo.peerTyping && atBottomRef.current) scrollToBottom('smooth');
+  }, [duo.peerTyping]);
 
   useEffect(() => {
     if (!selectMode) return;
-    // Drop selections for messages that disappeared (for example after a
-    // delete or a peer switch).
     setSelectedIds((current) => {
       const live = new Set(chatMessages.map((message) => message.id));
       const next = new Set([...current].filter((id) => live.has(id)));
@@ -110,10 +197,126 @@ export function ChatScreen() {
     });
   }, [chatMessages, selectMode]);
 
+  useEffect(() => {
+    return () => {
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    };
+  }, []);
+
+  function onScroll() {
+    const element = scrollRef.current;
+    if (!element) return;
+    const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
+    const near = distance < 120;
+    atBottomRef.current = near;
+    setAtBottom(near);
+    if (near) setNewCount(0);
+  }
+
   function send() {
+    if (editing) {
+      if (!draft.trim()) return;
+      duo.notifyTyping(false);
+      void duo
+        .editMessage(editing.id, draft)
+        .then(() => {
+          setDraft('');
+          setEditing(null);
+        })
+        .catch((cause) =>
+          duo.setError(cause instanceof Error ? cause.message : 'Message could not be edited')
+        );
+      return;
+    }
     if (!draft.trim()) return;
     duo.notifyTyping(false);
-    if (duo.sendMessage(draft, 'CHAT')) setDraft('');
+    if (duo.sendMessage(draft, 'CHAT', null, replyTarget?.id ?? null)) {
+      setDraft('');
+      setReplyTarget(null);
+      scrollToBottom();
+    }
+  }
+
+  async function onMediaSelect(files: File[]) {
+    for (const file of files) {
+      const sent = await duo.sendMedia(file, replyTarget?.id ?? null);
+      if (!sent) break;
+    }
+    setReplyTarget(null);
+    scrollToBottom();
+  }
+
+  function onVoiceSend(blob: Blob) {
+    const file =
+      blob instanceof File
+        ? blob
+        : new File([blob], `voice-${Date.now()}.webm`, { type: 'audio/webm' });
+    void duo.sendMedia(file, replyTarget?.id ?? null).then(() => {
+      setReplyTarget(null);
+      scrollToBottom();
+    });
+  }
+
+  function startReply(message: Message) {
+    setEditing(null);
+    setReplyTarget(message);
+    setActionMenu(null);
+    setToolsOpen(false);
+    window.setTimeout(
+      () => document.querySelector<HTMLTextAreaElement>('.composer-field textarea')?.focus(),
+      0
+    );
+  }
+
+  function startEdit(message: Message) {
+    if (message.senderId !== duo.user?.id) return;
+    if (Date.now() - new Date(message.createdAt).getTime() > EDIT_WINDOW) {
+      duo.setError('Messages can only be edited within 5 minutes.');
+      return;
+    }
+    setReplyTarget(null);
+    setEditing(message);
+    setDraft(message.content);
+    setActionMenu(null);
+    window.setTimeout(() => {
+      const field = document.querySelector<HTMLTextAreaElement>('.composer-field textarea');
+      field?.focus();
+      field?.setSelectionRange(message.content.length, message.content.length);
+    }, 0);
+  }
+
+  function cancelEdit() {
+    setEditing(null);
+    setDraft('');
+  }
+
+  function scrollToMessage(id: string) {
+    const item = displayItems.find((entry) => entry.messages.some((message) => message.id === id));
+    if (!item) {
+      duo.setNotice('The quoted message is not available.');
+      return;
+    }
+    const element = document.getElementById(`msg-${item.key}`);
+    element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setFlashId(id);
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => setFlashId(''), 1600);
+  }
+
+  function openActionMenu(
+    message: Message,
+    ids: string[],
+    editable: boolean,
+    x: number,
+    y: number
+  ) {
+    setActionMenu({
+      message,
+      ids,
+      editable,
+      x: Math.min(x, window.innerWidth - 190),
+      y: Math.min(y, window.innerHeight - 170)
+    });
   }
 
   function toggleSelected(id: string) {
@@ -139,14 +342,10 @@ export function ChatScreen() {
   function openPeer(id: string) {
     setMobileConversationOpen(true);
     exitSelectMode();
+    setReplyTarget(null);
+    setEditing(null);
+    setDraft('');
     void duo.selectPeer(id);
-  }
-
-  async function onPickFile(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) return;
-    await duo.sendMedia(file);
   }
 
   async function runConfirm() {
@@ -155,7 +354,7 @@ export function ChatScreen() {
     try {
       if (confirmAction.type === 'archive') await duo.archiveChat();
       if (confirmAction.type === 'history') await duo.deleteHistory();
-      if (confirmAction.type === 'message') await duo.deleteMessage(confirmAction.id);
+      if (confirmAction.type === 'message') await duo.deleteMessages(confirmAction.ids);
       if (confirmAction.type === 'bulk') {
         await duo.deleteMessages([...selectedIds]);
         exitSelectMode();
@@ -175,6 +374,8 @@ export function ChatScreen() {
   const deleted = duo.conversationStatus === 'DELETED';
   const archived = duo.conversationStatus === 'ARCHIVED';
   const selectedCount = selectedIds.size;
+  const confirmCount =
+    confirmAction?.type === 'message' ? confirmAction.ids.length : selectedCount;
 
   return (
     <div
@@ -248,7 +449,7 @@ export function ChatScreen() {
                 <p className="muted flex items-center gap-1.5 text-[11px]">
                   <span
                     className={`h-1.5 w-1.5 rounded-full ${
-                      peerTypingOrOnline(duo.peerTyping, peerOnline)
+                      duo.peerTyping || peerOnline ? 'bg-emerald-400' : 'bg-slate-500'
                     }`}
                   />
                   {duo.peerTyping
@@ -289,10 +490,7 @@ export function ChatScreen() {
                     <div className="panel dropdown-panel right-0 w-60 p-2">
                       <button
                         className="nav-item flex w-full items-center gap-2 text-left"
-                        onClick={() => {
-                          setToolsOpen(false);
-                          enterSelectMode();
-                        }}
+                        onClick={enterSelectMode}
                         disabled={!chatMessages.length}
                       >
                         <ListChecks size={15} /> Select messages
@@ -362,95 +560,56 @@ export function ChatScreen() {
 
         {deleted && (
           <div className="chat-banner chat-banner-danger">
-            The previous conversation was permanently deleted. RESTORE cannot recover it.
+            The previous conversation was deleted. The Host can recover it from the Admin dashboard.
           </div>
         )}
 
         <div className="panel chat-panel chat-panel-flat">
-          <div className="chat-scroll" ref={scrollRef}>
-            {chatMessages.map((message) => {
-              const mine = message.senderId === duo.user?.id;
-              const selected = selectedIds.has(message.id);
-              const bubbleClass = selected ? 'bubble-selected' : '';
-              const media = message.attachmentId ? (
-                <MessageMedia message={message} selectMode={selectMode} />
-              ) : null;
-              return mine ? (
-                <div key={message.id} className="message-row mine">
-                  <div
-                    className={`bubble bubble-sent ${bubbleClass}`}
-                    onClick={selectMode ? () => toggleSelected(message.id) : undefined}
-                    role={selectMode ? 'button' : undefined}
-                    aria-pressed={selectMode ? selected : undefined}
-                  >
-                    {selectMode && selected && (
-                      <span className="selection-check">
-                        <Check size={11} />
-                      </span>
-                    )}
-                    {media}
-                    {message.content && (
-                      <p className="whitespace-pre-wrap break-words text-sm leading-6">
-                        {message.content}
-                      </p>
-                    )}
-                    <div className="mt-1 flex items-center justify-end gap-2 text-[10px] text-white/55">
-                      <span>{formatTime(message.createdAt)}</span>
-                      <MessageStatus message={message} otherName={otherName} />
-                    </div>
-                    {!selectMode && (
-                      <button
-                        className="message-delete"
-                        aria-label="Delete message"
-                        title="Delete this message"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setConfirmAction({ type: 'message', id: message.id });
-                        }}
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div key={message.id} className="study-ai-row chat-ai-row">
-                  <span className="assistant-avatar small">{otherInitial}</span>
-                  <div
-                    className={`study-ai-bubble relative ${bubbleClass}`}
-                    onClick={selectMode ? () => toggleSelected(message.id) : undefined}
-                    role={selectMode ? 'button' : undefined}
-                    aria-pressed={selectMode ? selected : undefined}
-                  >
-                    {selectMode && selected && (
-                      <span className="selection-check">
-                        <Check size={11} />
-                      </span>
-                    )}
-                    {media}
-                    {message.content && (
-                      <p className="whitespace-pre-wrap break-words text-sm leading-7">
-                        {message.content}
-                      </p>
-                    )}
-                    <p className="mt-1 text-[10px] text-white/45">
-                      {formatTime(message.createdAt)}
-                    </p>
-                    {!selectMode && (
-                      <button
-                        className="message-delete"
-                        aria-label="Delete message"
-                        title="Delete this message"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setConfirmAction({ type: 'message', id: message.id });
-                        }}
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    )}
-                  </div>
-                </div>
+          <div className="chat-scroll-wrap">
+            <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
+            {displayItems.map((item) => {
+              const first = item.messages[0];
+              const mine = first.senderId === duo.user?.id;
+              const selected = item.messages.some((message) => selectedIds.has(message.id));
+              const flash = item.messages.some((message) => message.id === flashId);
+              return (
+                <MessageRow
+                  key={item.key}
+                  item={item}
+                  mine={mine}
+                  otherInitial={otherInitial}
+                  otherName={otherName}
+                  userId={duo.user?.id || ''}
+                  selected={selected}
+                  selectMode={selectMode}
+                  flash={flash}
+                  onSelect={() => item.messages.forEach((message) => toggleSelected(message.id))}
+                  onReply={() => startReply(first)}
+                  onEdit={item.messages.length === 1 ? () => startEdit(first) : undefined}
+                  onDelete={() =>
+                    setConfirmAction({
+                      type: 'message',
+                      ids: item.messages.map((message) => message.id)
+                    })
+                  }
+                  onMenu={(x, y) =>
+                    openActionMenu(
+                      first,
+                      item.messages.map((message) => message.id),
+                      item.messages.length === 1,
+                      x,
+                      y
+                    )
+                  }
+                  onQuote={scrollToMessage}
+                  onOpenMedia={(messages, index) => {
+                    if (selectMode) {
+                      messages.forEach((message) => toggleSelected(message.id));
+                      return;
+                    }
+                    setLightbox({ items: messages, index });
+                  }}
+                />
               );
             })}
             {!chatMessages.length && (
@@ -477,6 +636,22 @@ export function ChatScreen() {
               </div>
             )}
             <div ref={bottomRef} />
+          </div>
+            {(!atBottom || newCount > 0) && (
+              <button
+                type="button"
+                className={`chat-jump ${newCount > 0 ? 'has-count' : ''}`}
+                onClick={() => scrollToBottom()}
+                aria-label={newCount > 0 ? `Scroll to ${newCount} new messages` : 'Scroll to latest'}
+              >
+                <ChevronDown size={18} />
+                {newCount > 0 && (
+                  <span>
+                    {newCount} New Message{newCount === 1 ? '' : 's'}
+                  </span>
+                )}
+              </button>
+            )}
           </div>
 
           {selectMode && (
@@ -514,7 +689,7 @@ export function ChatScreen() {
               <p className="flex items-center gap-1.5 text-sm font-medium">
                 <BookOpen size={15} /> Study Mode
               </p>
-              <p className="muted text-[11px] leading-5">
+              <p className="muted hidden text-[11px] leading-5 sm:block">
                 Open the Study Assistant whenever you need a focused plan.
               </p>
             </div>
@@ -528,73 +703,95 @@ export function ChatScreen() {
             </Button>
           </div>
 
-          <div className="chat-composer">
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/*,video/*"
-              className="hidden"
-              onChange={(event) => void onPickFile(event)}
-            />
-            <button
-              type="button"
-              className="icon-btn"
-              aria-label="Send photo or video"
-              title="Send photo or video"
-              onClick={() => fileRef.current?.click()}
-            >
-              <ImagePlus size={19} />
-            </button>
-            <textarea
-              className="field min-h-[48px] resize-none"
-              rows={1}
+          {!selectMode && (
+            <ChatComposer
               value={draft}
-              maxLength={5000}
-              onChange={(event) => {
-                setDraft(event.target.value);
-                duo.notifyTyping(event.target.value.length > 0);
-              }}
-              onBlur={() => duo.notifyTyping(false)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey) {
-                  event.preventDefault();
-                  send();
-                }
-              }}
-              placeholder="Message…"
+              onChange={setDraft}
+              onSend={send}
+              onTyping={(typing) => duo.notifyTyping(typing)}
+              onMediaSelect={(files) => void onMediaSelect(files)}
+              onVoiceSend={onVoiceSend}
+              replyTo={replyTarget}
+              replyAuthor={
+                replyTarget
+                  ? replyTarget.senderId === duo.user?.id
+                    ? 'your message'
+                    : otherName
+                  : undefined
+              }
+              onCancelReply={() => setReplyTarget(null)}
+              editing={editing}
+              onCancelEdit={cancelEdit}
             />
-            <Button variant="primary" onClick={send} aria-label="Send message">
-              <Send size={17} />
-            </Button>
-          </div>
+          )}
         </div>
       </div>
+
+      {actionMenu && (
+        <>
+          <div className="message-menu-backdrop" onClick={() => setActionMenu(null)} />
+          <div
+            className="message-action-menu"
+            style={{ left: actionMenu.x, top: actionMenu.y }}
+            role="menu"
+          >
+            <button type="button" role="menuitem" onClick={() => startReply(actionMenu.message)}>
+              <Reply size={15} /> Reply
+            </button>
+            {actionMenu.editable &&
+              actionMenu.message.senderId === duo.user?.id &&
+              Date.now() - new Date(actionMenu.message.createdAt).getTime() <= EDIT_WINDOW && (
+                <button type="button" role="menuitem" onClick={() => startEdit(actionMenu.message)}>
+                  <Pencil size={15} /> Edit
+                </button>
+              )}
+            <button
+              type="button"
+              role="menuitem"
+              className="is-danger"
+              onClick={() => {
+                setConfirmAction({ type: 'message', ids: actionMenu.ids });
+                setActionMenu(null);
+              }}
+            >
+              <Trash2 size={15} /> Delete
+            </button>
+          </div>
+        </>
+      )}
+
+      {lightbox && (
+        <MediaLightbox
+          items={lightbox.items}
+          index={lightbox.index}
+          onIndex={(index) => setLightbox((current) => (current ? { ...current, index } : current))}
+          onClose={() => setLightbox(null)}
+        />
+      )}
 
       <Modal
         open={confirmAction !== null}
         title={
           confirmAction?.type === 'history'
-            ? 'Permanently delete conversation?'
+            ? 'Delete entire conversation?'
             : confirmAction?.type === 'archive'
               ? 'Archive this conversation?'
               : confirmAction?.type === 'bulk'
                 ? `Delete ${selectedCount} message${selectedCount === 1 ? '' : 's'}?`
                 : confirmAction?.type === 'mine'
                   ? 'Clear all chat for you?'
-                  : 'Delete this message?'
+                  : `Delete ${confirmCount} message${confirmCount === 1 ? '' : 's'}?`
         }
         onClose={() => setConfirmAction(null)}
       >
         <p className="muted text-sm leading-6">
           {confirmAction?.type === 'history'
-            ? 'This permanently removes all Chat messages for both accounts. It cannot be undone and RESTORE cannot recover them. Audit metadata is kept without message content.'
+            ? 'Messages are hidden from your view only. The other participant keeps their copy, and you can recover everything from the Admin dashboard.'
             : confirmAction?.type === 'archive'
               ? 'Messages and timestamps are preserved. The conversation is removed from active Chat and can be reopened with RESTORE.'
-              : confirmAction?.type === 'bulk'
-                ? 'The selected messages will be hidden from your view only. The other participant keeps their copy until they delete it.'
-                : confirmAction?.type === 'mine'
-                  ? 'Your view is cleared, but the Host keeps the full conversation until the Host deletes it. New messages still arrive normally.'
-                  : 'This message will be hidden from your view only. The other participant keeps their copy.'}
+              : confirmAction?.type === 'bulk' || confirmAction?.type === 'message'
+                ? 'This is a soft delete from your side only. The other participant keeps their copy. The Host can recover deleted messages from the Admin dashboard.'
+                : 'Your view is cleared, but the other participant keeps the conversation. New messages still arrive normally.'}
         </p>
         <div className="mt-5 flex justify-end gap-2">
           <Button onClick={() => setConfirmAction(null)}>Cancel</Button>
@@ -606,12 +803,12 @@ export function ChatScreen() {
             {busy
               ? 'Working…'
               : confirmAction?.type === 'history'
-                ? 'Delete permanently'
+                ? 'Delete for me'
                 : confirmAction?.type === 'bulk'
                   ? 'Delete selected'
                   : confirmAction?.type === 'mine'
                     ? 'Clear my chat'
-                    : 'Confirm'}
+                    : 'Delete'}
           </Button>
         </div>
       </Modal>
@@ -619,46 +816,198 @@ export function ChatScreen() {
   );
 }
 
-function peerTypingOrOnline(typing: boolean, online: boolean) {
-  return typing || online ? 'bg-emerald-400' : 'bg-slate-500';
-}
+function MessageRow({
+  item,
+  mine,
+  otherInitial,
+  otherName,
+  userId,
+  selected,
+  selectMode,
+  flash,
+  onSelect,
+  onReply,
+  onEdit,
+  onDelete,
+  onMenu,
+  onQuote,
+  onOpenMedia
+}: {
+  item: DisplayItem;
+  mine: boolean;
+  otherInitial: string;
+  otherName: string;
+  userId: string;
+  selected: boolean;
+  selectMode: boolean;
+  flash: boolean;
+  onSelect: () => void;
+  onReply: () => void;
+  onEdit?: () => void;
+  onDelete: () => void;
+  onMenu: (x: number, y: number) => void;
+  onQuote: (id: string) => void;
+  onOpenMedia: (messages: Message[], index: number) => void;
+}) {
+  const message = item.messages[0];
+  const last = item.messages[item.messages.length - 1];
+  const [offset, setOffset] = useState(0);
+  const touchRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
+  const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-function MessageMedia({ message, selectMode }: { message: Message; selectMode: boolean }) {
-  if (!message.attachmentId) return null;
-  const url = mediaUrl(message.attachmentId);
-  if (message.attachmentKind === 'VIDEO') {
-    return (
-      <div className="chat-media">
-        <video
-          src={url}
-          controls
-          playsInline
-          preload="metadata"
-          className="chat-media-video"
-          onClick={(event) => event.stopPropagation()}
-        />
-        {message.attachmentSize ? (
-          <span className="chat-media-meta">Video · {formatFileSize(message.attachmentSize)}</span>
-        ) : null}
-      </div>
-    );
+  useEffect(() => {
+    return () => {
+      if (longPressRef.current) clearTimeout(longPressRef.current);
+    };
+  }, []);
+
+  const bubbleClass = [
+    mine ? 'bubble bubble-sent chat-bubble' : 'study-ai-bubble chat-bubble',
+    selected ? 'bubble-selected' : '',
+    flash ? 'message-flash' : ''
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  function clearLongPress() {
+    if (longPressRef.current) clearTimeout(longPressRef.current);
+    longPressRef.current = null;
   }
-  return (
-    <div className="chat-media">
-      <img
-        src={url}
-        alt={message.attachmentName || 'Photo'}
-        loading="lazy"
-        className="chat-media-image"
-        onClick={(event) => {
-          event.stopPropagation();
-          if (selectMode) return;
-          window.open(url, '_blank', 'noopener,noreferrer');
-        }}
-      />
-      {message.attachmentSize ? (
-        <span className="chat-media-meta">Photo · {formatFileSize(message.attachmentSize)}</span>
+
+  const bubble = (
+    <div
+      className={bubbleClass}
+      onClick={selectMode ? onSelect : undefined}
+      onDoubleClick={selectMode ? undefined : onReply}
+      onContextMenu={(event) => {
+        if (selectMode) return;
+        event.preventDefault();
+        onMenu(event.clientX, event.clientY);
+      }}
+      onTouchStart={(event) => {
+        const touch = event.touches[0];
+        touchRef.current = { x: touch.clientX, y: touch.clientY, moved: false };
+        if (!selectMode) {
+          clearLongPress();
+          longPressRef.current = setTimeout(() => {
+            onMenu(touch.clientX, touch.clientY);
+            longPressRef.current = null;
+          }, 550);
+        }
+      }}
+      onTouchMove={(event) => {
+        const start = touchRef.current;
+        if (!start || selectMode) return;
+        const touch = event.touches[0];
+        const dx = touch.clientX - start.x;
+        const dy = Math.abs(touch.clientY - start.y);
+        if (Math.abs(dx) > 8 || dy > 8) {
+          start.moved = true;
+          clearLongPress();
+        }
+        if (dx > 0 && dy < 40) setOffset(Math.min(dx, 84));
+      }}
+      onTouchEnd={() => {
+        clearLongPress();
+        if (offset > 56) onReply();
+        setOffset(0);
+        touchRef.current = null;
+      }}
+      role={selectMode ? 'button' : undefined}
+      aria-pressed={selectMode ? selected : undefined}
+    >
+      {selectMode && selected && (
+        <span className="selection-check">
+          <Check size={11} />
+        </span>
+      )}
+
+      {message.replyTo || message.replyToId ? (
+        <button
+          type="button"
+          className="quoted-message"
+          onClick={(event) => {
+            event.stopPropagation();
+            if (message.replyTo) onQuote(message.replyTo.id);
+          }}
+        >
+          <span className="quoted-bar" />
+          <span className="min-w-0 flex-1 text-left">
+            <span className="quoted-author">
+              {message.replyTo?.senderId === userId ? 'You' : otherName}
+            </span>
+            <span className="quoted-text">
+              {message.replyTo
+                ? message.replyTo.content || attachmentLabel(message.replyTo as Message)
+                : 'Original message unavailable'}
+            </span>
+          </span>
+        </button>
       ) : null}
+
+      {item.media ? (
+        <MediaGrid messages={item.messages} onOpen={onOpenMedia} />
+      ) : message.attachmentId ? (
+        message.attachmentKind === 'VIDEO' ? (
+          <MediaGrid messages={[message]} onOpen={onOpenMedia} />
+        ) : message.attachmentKind === 'AUDIO' ? (
+          <AudioBubble message={message} />
+        ) : message.attachmentKind === 'IMAGE' ? (
+          <MediaGrid messages={[message]} onOpen={onOpenMedia} />
+        ) : (
+          <DocumentBubble message={message} />
+        )
+      ) : null}
+
+      {message.content && !item.media && (
+        <p className="whitespace-pre-wrap break-words text-sm leading-6">{message.content}</p>
+      )}
+
+      <div className={`chat-bubble-meta ${mine ? 'justify-end' : 'justify-start'}`}>
+        <span>{formatTime(last.createdAt)}</span>
+        {last.editedAt && <span className="chat-edited">edited</span>}
+        {last.attachmentSize && last.attachmentKind !== 'IMAGE' ? (
+          <span>{formatFileSize(last.attachmentSize)}</span>
+        ) : null}
+        {mine && <MessageStatus message={last} otherName={otherName} />}
+      </div>
+
+      {!selectMode && (
+        <button
+          type="button"
+          className="message-more-btn"
+          aria-label="Message actions"
+          onClick={(event) => {
+            event.stopPropagation();
+            const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+            onMenu(rect.right, rect.top);
+          }}
+        >
+          <MoreVertical size={13} />
+        </button>
+      )}
+    </div>
+  );
+
+  const content = (
+    <div style={{ transform: offset ? `translateX(${offset}px)` : undefined }} className="relative">
+      {offset > 12 && (
+        <span className="swipe-reply-hint" style={{ opacity: Math.min(offset / 60, 1) }}>
+          <Reply size={16} />
+        </span>
+      )}
+      {bubble}
+    </div>
+  );
+
+  return mine ? (
+    <div id={`msg-${item.key}`} className="message-row mine" data-message-id={message.id}>
+      {content}
+    </div>
+  ) : (
+    <div id={`msg-${item.key}`} className="study-ai-row chat-ai-row" data-message-id={message.id}>
+      <span className="assistant-avatar small">{otherInitial}</span>
+      {content}
     </div>
   );
 }

@@ -68,6 +68,15 @@ async function otherUser(userId: string) {
   return peer;
 }
 
+/** Host can switch chat notifications off for any account. */
+async function wantsChatNotifications(userId: string) {
+  const preference = await prisma.userPreference.findUnique({
+    where: { userId },
+    select: { chatNotifications: true }
+  });
+  return preference?.chatNotifications ?? true;
+}
+
 async function pairOrThrow(userId: string) {
   const pair = await pairFor(userId);
   if (!pair) throw new HttpError(500, 'No chat partner is configured.');
@@ -190,7 +199,18 @@ chatRouter.get(
       },
       orderBy: { createdAt: 'asc' },
       take: 500,
-      include: { sender: { select: { username: true, role: true, displayName: true } } }
+      include: {
+        sender: { select: { username: true, role: true, displayName: true } },
+        replyTo: {
+          select: {
+            id: true,
+            content: true,
+            senderId: true,
+            attachmentKind: true,
+            attachmentName: true
+          }
+        }
+      }
     });
     res.json(rows);
   })
@@ -203,7 +223,8 @@ chatRouter.post(
     const parsed = z
       .object({
         content: z.string().trim().min(1).max(5000),
-        destination: z.nativeEnum(MessageDestination).default(MessageDestination.CHAT)
+        destination: z.nativeEnum(MessageDestination).default(MessageDestination.CHAT),
+        replyToId: z.string().min(1).nullish()
       })
       .safeParse(req.body);
     if (!parsed.success) throw new HttpError(400, 'Invalid message');
@@ -217,15 +238,17 @@ chatRouter.post(
         include: { sender: { select: { username: true, role: true, displayName: true } } }
       });
       for (const id of [req.user!.id, other.id]) emitToUser(id, 'game:message:new', message);
-      await notifyUser({
-        userId: other.id,
-        actorId: req.user!.id,
-        eventType: 'GAME_MESSAGE',
-        payload: { gameMessageId: message.id },
-        butterfly: true,
-        push: true,
-        dedupeKey: `game:${message.id}:${other.id}`
-      });
+      if (await wantsChatNotifications(other.id)) {
+        await notifyUser({
+          userId: other.id,
+          actorId: req.user!.id,
+          eventType: 'GAME_MESSAGE',
+          payload: { gameMessageId: message.id },
+          butterfly: true,
+          push: true,
+          dedupeKey: `game:${message.id}:${other.id}`
+        });
+      }
       res.status(201).json(message);
       return;
     }
@@ -236,26 +259,84 @@ chatRouter.post(
       }
       throw error;
     });
+    const replyToId = parsed.data.replyToId ?? null;
+    if (replyToId) {
+      const quoted = await prisma.message.findFirst({
+        where: { id: replyToId, conversationId: conversation.id, deletedAt: null },
+        select: { id: true }
+      });
+      if (!quoted) throw new HttpError(400, 'The message you are replying to no longer exists');
+    }
     const message = await prisma.message.create({
       data: {
         conversationId: conversation.id,
         senderId: req.user!.id,
         content: parsed.data.content,
-        destination: MessageDestination.CHAT
+        destination: MessageDestination.CHAT,
+        replyToId
       },
-      include: { sender: { select: { username: true, role: true, displayName: true } } }
+      include: {
+        sender: { select: { username: true, role: true, displayName: true } },
+        replyTo: {
+          select: {
+            id: true,
+            content: true,
+            senderId: true,
+            attachmentKind: true,
+            attachmentName: true
+          }
+        }
+      }
     });
     for (const id of [req.user!.id, other.id]) emitToUser(id, 'message:new', message);
-    await notifyUser({
-      userId: other.id,
-      actorId: req.user!.id,
-      eventType: 'NEW_MESSAGE',
-      payload: { messageId: message.id },
-      butterfly: true,
-      push: true,
-      dedupeKey: `message:${message.id}:${other.id}`
-    });
+    if (await wantsChatNotifications(other.id)) {
+      await notifyUser({
+        userId: other.id,
+        actorId: req.user!.id,
+        eventType: 'NEW_MESSAGE',
+        payload: { messageId: message.id },
+        butterfly: true,
+        push: true,
+        dedupeKey: `message:${message.id}:${other.id}`
+      });
+    }
     res.status(201).json(message);
+  })
+);
+
+chatRouter.patch(
+  '/messages/:id',
+  requireChatUnlock,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z.object({ content: z.string().trim().min(1).max(5000) }).safeParse(req.body);
+    if (!parsed.success) throw new HttpError(400, 'Invalid message');
+
+    const message = await prisma.message.findUnique({ where: { id: req.params.id } });
+    if (!message || message.deletedAt) throw new HttpError(404, 'Message not found');
+    if (message.senderId !== req.user!.id) throw new HttpError(403, 'You can only edit your own messages');
+    if (Date.now() - message.createdAt.getTime() > 5 * 60 * 1000) {
+      throw new HttpError(403, 'Messages can only be edited within 5 minutes.');
+    }
+
+    const updated = await prisma.message.update({
+      where: { id: message.id },
+      data: { content: parsed.data.content, editedAt: new Date() },
+      include: {
+        sender: { select: { username: true, role: true, displayName: true } },
+        replyTo: {
+          select: {
+            id: true,
+            content: true,
+            senderId: true,
+            attachmentKind: true,
+            attachmentName: true
+          }
+        }
+      }
+    });
+    const other = await otherUser(req.user!.id);
+    for (const id of [req.user!.id, other.id]) emitToUser(id, 'message:updated', updated);
+    res.json(updated);
   })
 );
 
@@ -353,25 +434,36 @@ chatRouter.post(
 /* ------------------------------------------------------------------ */
 
 const mediaKindOf = (mimeType: string) =>
-  mimeType.startsWith('video/') ? 'VIDEO' : mimeType.startsWith('image/') ? 'IMAGE' : null;
+  mimeType.startsWith('video/')
+    ? 'VIDEO'
+    : mimeType.startsWith('image/')
+      ? 'IMAGE'
+      : mimeType.startsWith('audio/')
+        ? 'AUDIO'
+        : 'FILE';
 
 chatRouter.post(
   '/media',
   requireChatUnlock,
-  express.raw({ type: ['image/*', 'video/*'], limit: '200mb' }),
+  express.raw({ type: () => true, limit: '200mb' }),
   asyncHandler(async (req: AuthRequest, res) => {
     const body = req.body as unknown;
     if (!Buffer.isBuffer(body) || body.length === 0) {
-      throw new HttpError(400, 'Choose an image or a video to send');
+      throw new HttpError(400, 'Choose a file or a photo to send');
     }
     const mimeType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
-    const kind = mediaKindOf(mimeType);
-    if (!kind) throw new HttpError(400, 'Only images and videos are supported');
+    const kind = mediaKindOf(mimeType || 'application/octet-stream');
     if (kind === 'IMAGE' && body.length > 50 * 1024 * 1024) {
       throw new HttpError(413, 'Images must be 50 MB or smaller');
     }
     if (kind === 'VIDEO' && body.length > 200 * 1024 * 1024) {
       throw new HttpError(413, 'Videos must be 200 MB or smaller');
+    }
+    if (kind === 'AUDIO' && body.length > 25 * 1024 * 1024) {
+      throw new HttpError(413, 'Voice messages must be 25 MB or smaller');
+    }
+    if (kind === 'FILE' && body.length > 50 * 1024 * 1024) {
+      throw new HttpError(413, 'Files must be 50 MB or smaller');
     }
 
     const rawName = String(req.headers['x-file-name'] || '');
@@ -419,36 +511,27 @@ chatRouter.delete(
   '/history',
   requireHost,
   asyncHandler(async (req: AuthRequest, res) => {
-    const conversations = await prisma.conversation.findMany({
-      where: { status: { in: [ConversationStatus.ACTIVE, ConversationStatus.ARCHIVED] } }
-    });
-    const ids = conversations.map((conversation) => conversation.id);
-
-    if (ids.length > 0) {
-      await prisma.$transaction([
-        prisma.message.deleteMany({ where: { conversationId: { in: ids } } }),
-        prisma.conversation.updateMany({
-          where: { id: { in: ids } },
-          data: { status: ConversationStatus.DELETED }
-        }),
-        prisma.adminAuditLog.create({
-          data: {
-            actorId: req.user!.id,
-            action: 'DELETE_CONVERSATION_HISTORY',
-            metadata: { conversationCount: ids.length }
-          }
-        })
-      ]);
-    }
-
-    const recipients = await prisma.user.findMany({
-      where: { id: { not: req.user!.id } },
+    // Soft delete for the Host only. The Guest keeps their copy and the Host
+    // can recover everything from the Admin dashboard.
+    const rows = await prisma.message.findMany({
+      where: {
+        destination: MessageDestination.CHAT,
+        deletedAt: null,
+        hides: { none: { userId: req.user!.id } }
+      },
       select: { id: true }
     });
-    for (const recipient of recipients) {
-      emitToUser(recipient.id, 'chat:deleted', { permanently: true });
+    if (rows.length) {
+      await prisma.messageHide.createMany({
+        data: rows.map((row) => ({ messageId: row.id, userId: req.user!.id })),
+        skipDuplicates: true
+      });
     }
-    res.status(204).end();
+    await audit(req.user!.id, 'HIDE_CONVERSATION_HISTORY', undefined, {
+      count: rows.length
+    });
+    emitToUser(req.user!.id, 'message:hidden', { all: true });
+    res.json({ ok: true, count: rows.length });
   })
 );
 
@@ -659,7 +742,8 @@ chatRouter.get(
       browser: notifications?.browser ?? false,
       activitySharing: notifications?.activitySharing ?? false,
       reducedMotion: userPreferences?.reducedMotion ?? false,
-      defaultPeerMicOn: userPreferences?.defaultPeerMicOn ?? true
+      defaultPeerMicOn: userPreferences?.defaultPeerMicOn ?? true,
+      chatNotifications: userPreferences?.chatNotifications ?? true
     });
   })
 );
@@ -1016,6 +1100,194 @@ chatRouter.get(
     res.json(rows);
   })
 );
+
+chatRouter.get(
+  '/admin/deleted-messages',
+  requireHost,
+  asyncHandler(async (_req: AuthRequest, res) => {
+    const rows = await prisma.message.findMany({
+      where: {
+        destination: MessageDestination.CHAT,
+        OR: [{ deletedAt: { not: null } }, { hides: { some: {} } }]
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 300,
+      include: {
+        sender: { select: { username: true, role: true, displayName: true } },
+        replyTo: { select: { id: true, content: true, attachmentKind: true } },
+        hides: {
+          include: { user: { select: { id: true, username: true, role: true } } }
+        }
+      }
+    });
+    res.json(rows);
+  })
+);
+
+/**
+ * Recover soft-deleted messages: remove the per-account hides so the message
+ * becomes visible again. `ids` recovers selected messages; `role` recovers all
+ * messages hidden by that role; an empty body recovers everything.
+ */
+chatRouter.post(
+  '/admin/deleted-messages/recover',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({
+        ids: z.array(z.string().min(1)).optional(),
+        role: z.nativeEnum(Role).optional()
+      })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) throw new HttpError(400, 'Invalid recovery request');
+
+    const ids = parsed.data.ids?.length ? parsed.data.ids : undefined;
+    let count = 0;
+
+    if (ids) {
+      const result = await prisma.messageHide.deleteMany({ where: { messageId: { in: ids } } });
+      await prisma.message.updateMany({
+        where: { id: { in: ids }, deletedAt: { not: null } },
+        data: { deletedAt: null }
+      });
+      count = result.count;
+    } else if (parsed.data.role) {
+      const users = await prisma.user.findMany({
+        where: { role: parsed.data.role },
+        select: { id: true }
+      });
+      const result = await prisma.messageHide.deleteMany({
+        where: { userId: { in: users.map((user) => user.id) } }
+      });
+      count = result.count;
+    } else {
+      const result = await prisma.messageHide.deleteMany({});
+      await prisma.message.updateMany({
+        where: { deletedAt: { not: null } },
+        data: { deletedAt: null }
+      });
+      count = result.count;
+    }
+
+    await audit(req.user!.id, 'RECOVER_DELETED_MESSAGES', undefined, {
+      count,
+      ids: ids?.length ?? 0,
+      role: parsed.data.role ?? 'ALL'
+    });
+    // Every participant may still have the chat open; refresh their list.
+    const recipients = await prisma.user.findMany({ select: { id: true } });
+    for (const recipient of recipients) emitToUser(recipient.id, 'messages:recovered', {});
+    res.json({ ok: true, count });
+  })
+);
+
+/** Permanently removes recovered/soft-deleted messages from the database. */
+chatRouter.delete(
+  '/admin/deleted-messages',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({
+        ids: z.array(z.string().min(1)).optional(),
+        role: z.nativeEnum(Role).optional()
+      })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) throw new HttpError(400, 'Invalid delete request');
+
+    let where: any;
+    if (parsed.data.ids?.length) {
+      where = { id: { in: parsed.data.ids } };
+    } else if (parsed.data.role) {
+      const users = await prisma.user.findMany({
+        where: { role: parsed.data.role },
+        select: { id: true }
+      });
+      where = { hides: { some: { userId: { in: users.map((user) => user.id) } } } };
+    } else {
+      where = {
+        OR: [{ deletedAt: { not: null } }, { hides: { some: {} } }]
+      };
+    }
+
+    const rows = await prisma.message.findMany({
+      where,
+      select: { id: true, attachmentId: true }
+    });
+    const messageIds = rows.map((row) => row.id);
+    const mediaIds = rows
+      .map((row) => row.attachmentId)
+      .filter((id): id is string => Boolean(id));
+
+    if (messageIds.length) {
+      await prisma.message.deleteMany({ where: { id: { in: messageIds } } });
+    }
+    if (mediaIds.length) {
+      await prisma.chatMedia.deleteMany({ where: { id: { in: mediaIds } } });
+    }
+    await audit(req.user!.id, 'DELETE_DELETED_MESSAGES_FOREVER', undefined, {
+      count: messageIds.length
+    });
+    const recipients = await prisma.user.findMany({ select: { id: true } });
+    for (const recipient of recipients) emitToUser(recipient.id, 'messages:recovered', {});
+    res.json({ ok: true, count: messageIds.length });
+  })
+);
+
+chatRouter.get(
+  '/admin/users',
+  requireHost,
+  asyncHandler(async (_req: AuthRequest, res) => {
+    const users = await prisma.user.findMany({
+      where: { role: { in: [Role.HOST, Role.GUEST] } },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true,
+        username: true,
+        displayName: true,
+        role: true,
+        lastSeenAt: true
+      }
+    });
+    const preferences = await prisma.userPreference.findMany({
+      where: { userId: { in: users.map((user) => user.id) } },
+      select: { userId: true, chatNotifications: true }
+    });
+    const preferenceMap = new Map(
+      preferences.map((preference) => [preference.userId, preference.chatNotifications])
+    );
+    res.json(
+      users.map((user) => ({
+        ...user,
+        chatNotifications: preferenceMap.get(user.id) ?? true
+      }))
+    );
+  })
+);
+
+chatRouter.post(
+  '/admin/features',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({ userId: z.string().min(1), chatNotifications: z.boolean() })
+      .safeParse(req.body);
+    if (!parsed.success) throw new HttpError(400, 'Invalid feature settings');
+
+    await prisma.userPreference.upsert({
+      where: { userId: parsed.data.userId },
+      create: {
+        userId: parsed.data.userId,
+        chatNotifications: parsed.data.chatNotifications
+      },
+      update: { chatNotifications: parsed.data.chatNotifications }
+    });
+    await audit(req.user!.id, 'UPDATE_USER_FEATURES', parsed.data.userId, {
+      chatNotifications: parsed.data.chatNotifications
+    });
+    res.json({ ok: true });
+  })
+);
+
 
 chatRouter.get(
   '/admin/game-messages',

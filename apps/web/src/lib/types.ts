@@ -43,12 +43,21 @@ export type Message = {
   createdAt: string;
   readAt?: string | null;
   deliveredAt?: string | null;
+  editedAt?: string | null;
   destination: MessageDestination;
   attachmentId?: string | null;
   attachmentKind?: string | null;
   attachmentMime?: string | null;
   attachmentName?: string | null;
   attachmentSize?: number | null;
+  replyToId?: string | null;
+  replyTo?: {
+    id: string;
+    content: string;
+    senderId: string;
+    attachmentKind?: string | null;
+    attachmentName?: string | null;
+  } | null;
   sender?: { username: string; role: Role; displayName?: string | null };
 };
 
@@ -87,6 +96,7 @@ export type Preferences = {
   activitySharing: boolean;
   reducedMotion: boolean;
   defaultPeerMicOn: boolean;
+  chatNotifications: boolean;
 };
 
 export type CallParticipant = {

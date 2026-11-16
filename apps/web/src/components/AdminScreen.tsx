@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   ArchiveRestore,
+  Bell,
+  BellOff,
   Check,
   Gamepad2,
   History,
@@ -11,6 +13,7 @@ import {
   Mic,
   Phone,
   RefreshCw,
+  RotateCcw,
   Search,
   Shield,
   Ticket,
@@ -24,11 +27,25 @@ import { formatDateTime, eventLabel } from '@/lib/utils';
 import { Badge, Button, EmptyState, Field, Modal, Panel, SectionTitle } from '@/components/ui';
 
 type AdminMessage = Message & { conversation?: { status: string } };
-type Tab = 'overview' | 'chat' | 'game' | 'permissions' | 'promo' | 'activity';
+type AdminDeletedMessage = Message & {
+  conversation?: { status: string };
+  hides?: Array<{ id: string; user?: { id: string; username: string; role: string } }>;
+};
+type AdminUser = {
+  id: string;
+  username: string;
+  displayName?: string | null;
+  role: 'HOST' | 'GUEST';
+  lastSeenAt?: string | null;
+  chatNotifications: boolean;
+};
+type Tab = 'overview' | 'chat' | 'deleted' | 'features' | 'game' | 'permissions' | 'promo' | 'activity';
 
 const tabs: Array<{ id: Tab; label: string; icon: React.ReactNode }> = [
   { id: 'overview', label: 'Overview', icon: <Activity size={15} /> },
   { id: 'chat', label: 'Chat history', icon: <MessageCircle size={15} /> },
+  { id: 'deleted', label: 'Deleted messages', icon: <RotateCcw size={15} /> },
+  { id: 'features', label: 'User features', icon: <Bell size={15} /> },
   { id: 'game', label: 'Game messages', icon: <Gamepad2 size={15} /> },
   { id: 'permissions', label: 'Permissions', icon: <Shield size={15} /> },
   { id: 'promo', label: 'Promo code', icon: <Ticket size={15} /> },
@@ -40,6 +57,9 @@ export function AdminScreen() {
   const [tab, setTab] = useState<Tab>('overview');
   const [activity, setActivity] = useState<AdminActivity | null>(null);
   const [messages, setMessages] = useState<AdminMessage[]>([]);
+  const [deletedMessages, setDeletedMessages] = useState<AdminDeletedMessage[]>([]);
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
+  const [deletedRole, setDeletedRole] = useState<'' | 'HOST' | 'GUEST'>('');
   const [gameMessages, setGameMessages] = useState<GameMessage[]>([]);
   const [search, setSearch] = useState('');
   const [promoCode, setPromoCode] = useState('');
@@ -51,14 +71,25 @@ export function AdminScreen() {
 
   const refresh = useCallback(async (query: string) => {
     setLoading(true);
-    const [activityResult, messagesResult, gameResult, promoResult] = await Promise.allSettled([
+    const [
+      activityResult,
+      messagesResult,
+      deletedResult,
+      usersResult,
+      gameResult,
+      promoResult
+    ] = await Promise.allSettled([
       api<AdminActivity>('/chat/admin/activity'),
       api<AdminMessage[]>(`/chat/admin/messages${query ? `?q=${encodeURIComponent(query)}` : ''}`),
+      api<AdminDeletedMessage[]>('/chat/admin/deleted-messages'),
+      api<AdminUser[]>('/chat/admin/users'),
       api<GameMessage[]>('/chat/admin/game-messages'),
       api<any>('/chat/admin/promo/status')
     ]);
     if (activityResult.status === 'fulfilled') setActivity(activityResult.value);
     if (messagesResult.status === 'fulfilled') setMessages(messagesResult.value);
+    if (deletedResult.status === 'fulfilled') setDeletedMessages(deletedResult.value);
+    if (usersResult.status === 'fulfilled') setAdminUsers(usersResult.value);
     if (gameResult.status === 'fulfilled') setGameMessages(gameResult.value);
     if (promoResult.status === 'fulfilled') setPromoStatus(promoResult.value);
     setLoading(false);
@@ -93,6 +124,80 @@ export function AdminScreen() {
       setBusy('');
     }
   }
+
+  async function recoverDeleted(ids?: string[], role?: 'HOST' | 'GUEST') {
+    if (!ids?.length && !role && !window.confirm('Recover every deleted message?')) return;
+    setBusy('recover');
+    try {
+      await api('/chat/admin/deleted-messages/recover', {
+        method: 'POST',
+        body: JSON.stringify({ ids, role })
+      });
+      await refresh(search);
+    } catch (cause) {
+      duo.setError(cause instanceof Error ? cause.message : 'Recovery failed');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function purgeDeleted(ids?: string[], role?: 'HOST' | 'GUEST') {
+    if (
+      !window.confirm(
+        'Permanently delete these messages? This cannot be undone and the other side loses their copy too.'
+      )
+    ) {
+      return;
+    }
+    setBusy('purge');
+    try {
+      await api('/chat/admin/deleted-messages', {
+        method: 'DELETE',
+        body: JSON.stringify({ ids, role })
+      });
+      await refresh(search);
+    } catch (cause) {
+      duo.setError(cause instanceof Error ? cause.message : 'Delete failed');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function toggleChatNotifications(user: AdminUser) {
+    setBusy(`feature-${user.id}`);
+    try {
+      await api('/chat/admin/features', {
+        method: 'POST',
+        body: JSON.stringify({
+          userId: user.id,
+          chatNotifications: !user.chatNotifications
+        })
+      });
+      setAdminUsers((current) =>
+        current.map((entry) =>
+          entry.id === user.id
+            ? { ...entry, chatNotifications: !entry.chatNotifications }
+            : entry
+        )
+      );
+    } catch (cause) {
+      duo.setError(cause instanceof Error ? cause.message : 'Feature could not be updated');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  const visibleDeleted = useMemo(
+    () =>
+      deletedMessages.filter((message) => {
+        if (!deletedRole) return true;
+        return (
+          message.sender?.role === deletedRole ||
+          Boolean(message.hides?.some((hide) => hide.user?.role === deletedRole))
+        );
+      }),
+    [deletedMessages, deletedRole]
+  );
 
   async function deleteGameMessage(id: string) {
     if (!window.confirm('Delete this game message permanently?')) return;
@@ -346,8 +451,8 @@ export function AdminScreen() {
                 <p className="eyebrow">Destructive authority</p>
                 <h3 className="mt-1 text-lg font-semibold">Conversation history</h3>
                 <p className="muted mt-1 text-sm">
-                  Permanently delete every Chat message. Audit records are kept without
-                  message content, and RESTORE cannot recover deleted data.
+                  Hides every Chat message from the Host view only. The User keeps their copy,
+                  and you can recover or permanently delete it from the Deleted messages tab.
                 </p>
               </div>
               <Button variant="danger" onClick={() => setDeleteOpen(true)}>
@@ -416,6 +521,155 @@ export function AdminScreen() {
                 title="No messages found"
                 description="Try a different search or start a conversation."
               />
+            )}
+          </div>
+        </Panel>
+      )}
+
+      {tab === 'deleted' && (
+        <Panel className="p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="eyebrow">Soft-deleted store</p>
+              <h3 className="mt-1 text-lg font-semibold">Deleted messages</h3>
+              <p className="muted mt-1 text-xs">
+                Deleted from one side only. Recover to restore the message, or delete forever to
+                remove it for both participants.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <select
+                className="field w-32"
+                value={deletedRole}
+                onChange={(event) =>
+                  setDeletedRole(event.target.value as '' | 'HOST' | 'GUEST')
+                }
+              >
+                <option value="">All users</option>
+                <option value="HOST">Host</option>
+                <option value="GUEST">User</option>
+              </select>
+              <Button
+                onClick={() => void recoverDeleted(undefined, deletedRole || undefined)}
+                disabled={busy === 'recover' || visibleDeleted.length === 0}
+              >
+                <RotateCcw size={14} /> Recover {deletedRole ? deletedRole.toLowerCase() : 'all'}
+              </Button>
+              <Button
+                variant="danger"
+                onClick={() => void purgeDeleted(undefined, deletedRole || undefined)}
+                disabled={busy === 'purge' || visibleDeleted.length === 0}
+              >
+                <Trash2 size={14} /> Delete forever
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-4 space-y-2">
+            {visibleDeleted.map((message) => (
+              <div
+                key={message.id}
+                className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-white/5 bg-black/15 p-3"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone="accent">{message.sender?.username || message.senderId}</Badge>
+                    <Badge tone={message.sender?.role === 'HOST' ? 'good' : 'neutral'}>
+                      {message.sender?.role || 'USER'}
+                    </Badge>
+                    <span className="muted text-[11px]">{formatDateTime(message.createdAt)}</span>
+                    {message.hides?.length ? (
+                      <span className="muted text-[11px]">
+                        hidden for{' '}
+                        {message.hides
+                          .map((hide) => hide.user?.username || 'account')
+                          .join(', ')}
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="mt-1 break-words text-sm leading-6">
+                    {message.content ||
+                      (message.attachmentKind === 'IMAGE'
+                        ? '📷 Photo'
+                        : message.attachmentKind === 'VIDEO'
+                          ? '🎬 Video'
+                          : message.attachmentKind === 'AUDIO'
+                            ? '🎙️ Voice message'
+                            : message.attachmentName
+                              ? `📎 ${message.attachmentName}`
+                              : 'Attachment')}
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <Button
+                    className="!px-2.5 !py-1.5 text-xs"
+                    onClick={() => void recoverDeleted([message.id])}
+                    disabled={busy === 'recover'}
+                  >
+                    <RotateCcw size={13} /> Recover
+                  </Button>
+                  <Button
+                    variant="danger"
+                    className="!px-2.5 !py-1.5 text-xs"
+                    onClick={() => void purgeDeleted([message.id])}
+                    disabled={busy === 'purge'}
+                  >
+                    <Trash2 size={13} />
+                  </Button>
+                </div>
+              </div>
+            ))}
+            {!visibleDeleted.length && (
+              <EmptyState
+                icon={<RotateCcw size={24} />}
+                title="No deleted messages"
+                description="Messages deleted by either side will appear here."
+              />
+            )}
+          </div>
+        </Panel>
+      )}
+
+      {tab === 'features' && (
+        <Panel className="p-5">
+          <div>
+            <p className="eyebrow">Per-user features</p>
+            <h3 className="mt-1 text-lg font-semibold">Chat notifications</h3>
+            <p className="muted mt-1 text-sm leading-6">
+              Choose which accounts receive chat notifications. When enabled, the browser shows
+              only a notification icon — never the message text. When disabled, no chat
+              notification or butterfly is sent to that account.
+            </p>
+          </div>
+          <div className="mt-4 space-y-2">
+            {adminUsers.map((user) => (
+              <div
+                key={user.id}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/5 bg-black/15 p-3"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="chat-avatar chat-avatar-sm">
+                    {(user.displayName || user.username).charAt(0).toUpperCase()}
+                  </span>
+                  <div>
+                    <p className="text-sm font-medium">{user.displayName || user.username}</p>
+                    <p className="muted text-[11px]">
+                      {user.role} · {user.chatNotifications ? 'Notifications on' : 'Notifications off'}
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  onClick={() => void toggleChatNotifications(user)}
+                  disabled={busy === `feature-${user.id}`}
+                  variant={user.chatNotifications ? 'primary' : 'ghost'}
+                >
+                  {user.chatNotifications ? <Bell size={14} /> : <BellOff size={14} />}
+                  {user.chatNotifications ? 'Disable notifications' : 'Enable notifications'}
+                </Button>
+              </div>
+            ))}
+            {!adminUsers.length && (
+              <p className="muted text-sm">No accounts found.</p>
             )}
           </div>
         </Panel>
@@ -657,9 +911,8 @@ export function AdminScreen() {
         }}
       >
         <p className="muted text-sm leading-6">
-          This permanently deletes every Chat message. It cannot be undone and RESTORE can
-          never bring it back. An audit record will say the history was deleted, without keeping
-          message content.
+          This hides every Chat message from the Host view only. The User keeps their copy, and
+          you can recover or permanently delete the messages from the Deleted messages tab.
         </p>
         <Field
           label="Type DELETE to confirm"
@@ -679,7 +932,7 @@ export function AdminScreen() {
             Cancel
           </Button>
           <Button variant="danger" onClick={() => void deleteHistory()} disabled={busy === 'history'}>
-            {busy === 'history' ? 'Deleting…' : 'Delete permanently'}
+            {busy === 'history' ? 'Deleting…' : 'Delete for me'}
           </Button>
         </div>
       </Modal>
