@@ -545,7 +545,12 @@ export function ChatScreen() {
                   <span className="chat-avatar chat-avatar-sm">{name.charAt(0).toUpperCase()}</span>
                   <span className="min-w-0 flex-1 text-left">
                     <span className="flex items-center justify-between gap-2">
-                      <span className="truncate text-sm font-medium">{name}</span>
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span className="truncate text-sm font-medium">{name}</span>
+                        <span className="ai-tag" title="AI account">
+                          AI
+                        </span>
+                      </span>
                       {contact.unread > 0 && (
                         <span className="chat-contact-badge">{contact.unread}</span>
                       )}
@@ -586,7 +591,12 @@ export function ChatScreen() {
             <div className="chat-person">
               <span className="chat-avatar">{ASSISTANT_AVATAR}</span>
               <div className="min-w-0 text-left">
-                <p className="truncate text-sm font-semibold">{otherName}</p>
+                <p className="chat-name-line text-sm font-semibold">
+                  <span className="truncate">{otherName}</span>
+                  <span className="ai-tag" title="AI account">
+                    AI
+                  </span>
+                </p>
                 <p className="muted flex items-center gap-1.5 text-[11px]">
                   <span
                     className={`h-1.5 w-1.5 rounded-full ${

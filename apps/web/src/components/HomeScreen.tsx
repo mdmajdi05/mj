@@ -100,7 +100,12 @@ export function HomeScreen() {
                   </span>
                   <span className="min-w-0 flex-1 text-left">
                     <span className="flex items-center justify-between gap-2">
-                      <span className="truncate text-sm font-medium">{name}</span>
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span className="truncate text-sm font-medium">{name}</span>
+                        <span className="ai-tag" title="AI account">
+                          AI
+                        </span>
+                      </span>
                       {contact.unread > 0 && (
                         <span className="chat-contact-badge">{contact.unread}</span>
                       )}
