@@ -1898,14 +1898,14 @@ export function useDuoApp() {
             : 'FILE';
       const limits: Record<string, number> = {
         IMAGE: 50 * 1024 * 1024,
-        VIDEO: 500 * 1024 * 1024,
+        VIDEO: 900 * 1024 * 1024,
         AUDIO: 25 * 1024 * 1024,
         FILE: 50 * 1024 * 1024
       };
       if (file.size > limits[kind]) {
         showError(
           kind === 'VIDEO'
-            ? 'Videos must be 500 MB or smaller.'
+            ? 'Videos must be 900 MB or smaller.'
             : kind === 'IMAGE'
               ? 'Images must be 50 MB or smaller.'
               : kind === 'AUDIO'

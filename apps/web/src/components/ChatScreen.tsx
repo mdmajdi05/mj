@@ -27,6 +27,7 @@ import { ChatComposer } from '@/components/ChatComposer';
 import type { PendingAttachment } from '@/components/ChatComposer';
 import { holdMediaInteraction } from '@/lib/mediaGuard';
 import { prepareImageForUpload } from '@/lib/imageProcessing';
+import { prepareVideoForUpload } from '@/lib/videoProcessing';
 import {
   AudioBubble,
   DocumentBubble,
@@ -327,9 +328,16 @@ export function ChatScreen() {
       holdMediaInteraction(10 * 60 * 1000);
       updatePending(item.id, { status: 'uploading', progress: 0, error: undefined });
 
-      // Resize/re-encode large camera and gallery photos before upload. Video
-      // and documents are sent as-is.
-      const uploadFile = await prepareImageForUpload(item.file);
+      // Photos are resized/re-encoded before upload. Oversized videos are
+      // compressed in the browser first (compression uses the first 90% of
+      // the progress bar, the actual upload the last 10%). Documents are sent
+      // as-is.
+      const uploadFile =
+        item.kind === 'VIDEO'
+          ? await prepareVideoForUpload(item.file, (fraction) =>
+              updatePending(item.id, { progress: Math.round(fraction * 90) })
+            )
+          : await prepareImageForUpload(item.file);
       if (run !== uploadRunRef.current) break;
       const controller = new AbortController();
       uploadAbortRef.current.set(item.id, controller);
@@ -337,7 +345,10 @@ export function ChatScreen() {
       const sent = await duo.sendMedia(
         uploadFile,
         replyId,
-        (progress) => updatePending(item.id, { progress }),
+        (progress) =>
+          updatePending(item.id, {
+            progress: 90 + Math.round(progress * 10)
+          }),
         !captionSent ? caption : '',
         controller.signal
       );

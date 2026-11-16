@@ -483,7 +483,7 @@ const mediaKindOf = (mimeType: string) =>
 chatRouter.post(
   '/media',
   requireChatUnlock,
-  express.raw({ type: () => true, limit: '520mb' }),
+  express.raw({ type: () => true, limit: '1gb' }),
   asyncHandler(async (req: AuthRequest, res) => {
     const body = req.body as unknown;
     if (!Buffer.isBuffer(body) || body.length === 0) {
@@ -494,8 +494,8 @@ chatRouter.post(
     if (kind === 'IMAGE' && body.length > 50 * 1024 * 1024) {
       throw new HttpError(413, 'Images must be 50 MB or smaller');
     }
-    if (kind === 'VIDEO' && body.length > 500 * 1024 * 1024) {
-      throw new HttpError(413, 'Videos must be 500 MB or smaller');
+    if (kind === 'VIDEO' && body.length > 900 * 1024 * 1024) {
+      throw new HttpError(413, 'Videos must be 900 MB or smaller');
     }
     if (kind === 'AUDIO' && body.length > 25 * 1024 * 1024) {
       throw new HttpError(413, 'Voice messages must be 25 MB or smaller');

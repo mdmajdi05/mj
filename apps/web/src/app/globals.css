@@ -2725,6 +2725,50 @@ button:disabled {
   object-fit: contain;
 }
 
+/* Inline video playback: muted first tap, fullscreen only on request. */
+.media-tile-video {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.media-tile-video video {
+  cursor: pointer;
+}
+
+.media-tile-video-controls {
+  position: absolute;
+  right: 0.4rem;
+  bottom: 0.4rem;
+  display: flex;
+  gap: 0.25rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+
+.media-tile-video:hover .media-tile-video-controls,
+.media-tile-video-controls.is-playing {
+  opacity: 1;
+}
+
+.media-tile-video-controls button {
+  display: grid;
+  height: 1.55rem;
+  width: 1.55rem;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  backdrop-filter: blur(4px);
+}
+
+.media-tile-video-controls button:hover {
+  background: rgba(0, 0, 0, 0.82);
+}
+
 .media-grid-one video.media-tile-media {
   width: 100%;
 }

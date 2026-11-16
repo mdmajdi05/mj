@@ -1,7 +1,18 @@
 'use client';
 
 import { useMemo, useEffect, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Download, FileText, Pause, Play, X } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  FileText,
+  Maximize2,
+  Pause,
+  Play,
+  Volume2,
+  VolumeX,
+  X
+} from 'lucide-react';
 import { API } from '@/lib/api';
 import { formatFileSize } from '@/lib/utils';
 import type { Message } from '@/lib/types';
@@ -26,8 +37,22 @@ function durationOf(value: number) {
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
-function VideoTile({ message }: { message: Message }) {
+/**
+ * Video plays inline in the bubble, muted by default (Instagram/WhatsApp
+ * style). The fullscreen player only opens when the viewer taps the expand
+ * button — never automatically.
+ */
+function VideoTile({
+  message,
+  onFullscreen
+}: {
+  message: Message;
+  onFullscreen: () => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const [duration, setDuration] = useState('');
+  const [playing, setPlaying] = useState(false);
+  const [muted, setMuted] = useState(true);
 
   useEffect(() => {
     const element = document.createElement('video');
@@ -42,20 +67,74 @@ function VideoTile({ message }: { message: Message }) {
     };
   }, [message.attachmentId]);
 
+  function togglePlay() {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused || video.ended) {
+      // Inline playback always starts muted so it never surprises the user.
+      video.muted = true;
+      setMuted(true);
+      void video.play().catch(() => undefined);
+    } else {
+      video.pause();
+    }
+  }
+
+  function toggleMute() {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = !video.muted;
+    setMuted(video.muted);
+  }
+
   return (
-    <>
+    <div className="media-tile-video">
       <video
+        ref={videoRef}
         src={mediaUrl(message.attachmentId!)}
         muted
         playsInline
         preload="metadata"
         className="media-tile-media"
+        onClick={togglePlay}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
       />
-      <span className="media-tile-play">
-        <Play size={18} />
-      </span>
+      {!playing && (
+        <button
+          type="button"
+          className="media-tile-play"
+          onClick={togglePlay}
+          aria-label="Play video"
+        >
+          <Play size={18} />
+        </button>
+      )}
       {duration && <span className="media-tile-duration">{duration}</span>}
-    </>
+      <div className={`media-tile-video-controls ${playing ? 'is-playing' : ''}`}>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            toggleMute();
+          }}
+          aria-label={muted ? 'Unmute video' : 'Mute video'}
+        >
+          {muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
+        </button>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onFullscreen();
+          }}
+          aria-label="Open fullscreen video"
+        >
+          <Maximize2 size={13} />
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -76,23 +155,22 @@ export function MediaGrid({
   return (
     <div className={`media-grid media-grid-${layout}`}>
       {shown.map((message, index) => {
-        const content = (
-          <>
-            {isImage(message) ? (
-              <img
-                src={mediaUrl(message.attachmentId!)}
-                alt={message.attachmentName || 'Photo'}
-                loading="lazy"
-                className="media-tile-media"
+        const extraBadge =
+          extra > 0 && index === shown.length - 1 ? (
+            <span className="media-tile-more">+{extra}</span>
+          ) : null;
+
+        if (isVideo(message)) {
+          return (
+            <div key={message.id} className="media-tile">
+              <VideoTile
+                message={message}
+                onFullscreen={() => onOpen(messages, index)}
               />
-            ) : (
-              <VideoTile message={message} />
-            )}
-            {extra > 0 && index === shown.length - 1 && (
-              <span className="media-tile-more">+{extra}</span>
-            )}
-          </>
-        );
+              {extraBadge}
+            </div>
+          );
+        }
 
         return (
           <button
@@ -103,9 +181,15 @@ export function MediaGrid({
               event.stopPropagation();
               onOpen(messages, index);
             }}
-            aria-label={isVideo(message) ? 'Play video' : 'Preview photo'}
+            aria-label="Preview photo"
           >
-            {content}
+            <img
+              src={mediaUrl(message.attachmentId!)}
+              alt={message.attachmentName || 'Photo'}
+              loading="lazy"
+              className="media-tile-media"
+            />
+            {extraBadge}
           </button>
         );
       })}

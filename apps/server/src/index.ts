@@ -84,7 +84,7 @@ attachSocketHandlers(io);
 app.set('io', io);
 
 const port = Number(process.env.PORT || 4000);
-server.requestTimeout = 900_000;
+server.requestTimeout = 1_800_000;
 server.headersTimeout = 120_000;
 
 server.listen(port, () => {

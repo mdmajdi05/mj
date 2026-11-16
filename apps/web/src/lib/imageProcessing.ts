@@ -111,7 +111,7 @@ export async function prepareImageForUpload(file: File): Promise<File> {
 }
 
 export function describeUploadLimit(kind: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE') {
-  if (kind === 'VIDEO') return 'Videos must be 500 MB or smaller.';
+  if (kind === 'VIDEO') return 'Videos must be 900 MB or smaller.';
   if (kind === 'IMAGE') return 'Images must be 50 MB or smaller.';
   if (kind === 'AUDIO') return 'Voice messages must be 25 MB or smaller.';
   return 'Files must be 50 MB or smaller.';
