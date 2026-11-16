@@ -24,6 +24,8 @@ import type { Message } from '@/lib/types';
 import { Button, EmptyState, Modal } from '@/components/ui';
 import { CallOrb, CallPanel } from '@/components/CallControls';
 import { ChatComposer } from '@/components/ChatComposer';
+import type { PendingAttachment } from '@/components/ChatComposer';
+import { holdMediaInteraction } from '@/lib/mediaGuard';
 import {
   AudioBubble,
   DocumentBubble,
@@ -69,6 +71,8 @@ export function ChatScreen() {
   const [mobileConversationOpen, setMobileConversationOpen] = useState(false);
   const [replyTarget, setReplyTarget] = useState<Message | null>(null);
   const [editing, setEditing] = useState<Message | null>(null);
+  const [pending, setPending] = useState<PendingAttachment[]>([]);
+  const [uploading, setUploading] = useState(false);
   const [actionMenu, setActionMenu] = useState<ActionMenu>(null);
   const [lightbox, setLightbox] = useState<{ items: Message[]; index: number } | null>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -203,6 +207,14 @@ export function ChatScreen() {
     };
   }, []);
 
+  const pendingRef = useRef<PendingAttachment[]>([]);
+  pendingRef.current = pending;
+  useEffect(() => {
+    return () => {
+      pendingRef.current.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+    };
+  }, []);
+
   function onScroll() {
     const element = scrollRef.current;
     if (!element) return;
@@ -228,6 +240,10 @@ export function ChatScreen() {
         );
       return;
     }
+    if (pending.length) {
+      void sendPending();
+      return;
+    }
     if (!draft.trim()) return;
     duo.notifyTyping(false);
     if (duo.sendMessage(draft, 'CHAT', null, replyTarget?.id ?? null)) {
@@ -237,13 +253,111 @@ export function ChatScreen() {
     }
   }
 
-  async function onMediaSelect(files: File[]) {
-    for (const file of files) {
-      const sent = await duo.sendMedia(file, replyTarget?.id ?? null);
-      if (!sent) break;
+  function makePending(file: File): PendingAttachment {
+    const mime = file.type || '';
+    const kind: PendingAttachment['kind'] = mime.startsWith('image/')
+      ? 'IMAGE'
+      : mime.startsWith('video/')
+        ? 'VIDEO'
+        : mime.startsWith('audio/')
+          ? 'AUDIO'
+          : 'FILE';
+    return {
+      id: `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      file,
+      previewUrl: URL.createObjectURL(file),
+      kind,
+      status: 'ready',
+      progress: 0
+    };
+  }
+
+  /** Adds files to the preview tray; nothing is uploaded until Send. */
+  function queueFiles(files: File[], autoSend = false) {
+    const items = files.map(makePending);
+    setPending((current) => [...current, ...items]);
+    if (autoSend) void uploadAttachments(items, draft.trim());
+  }
+
+  function updatePending(id: string, patch: Partial<PendingAttachment>) {
+    setPending((current) =>
+      current.map((item) => (item.id === id ? { ...item, ...patch } : item))
+    );
+  }
+
+  function discardPending(id: string) {
+    setPending((current) => {
+      const item = current.find((entry) => entry.id === id);
+      if (item) URL.revokeObjectURL(item.previewUrl);
+      return current.filter((entry) => entry.id !== id);
+    });
+  }
+
+  function cancelPending() {
+    if (uploading) return;
+    setPending((current) => {
+      current.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+      return [];
+    });
+  }
+
+  async function uploadAttachments(items: PendingAttachment[], caption: string) {
+    if (!items.length) return;
+    setUploading(true);
+    let captionSent = false;
+    let sentAny = false;
+    const replyId = replyTarget?.id ?? null;
+
+    for (const item of items) {
+      // Keep the privacy guard quiet for long uploads as well.
+      holdMediaInteraction(10 * 60 * 1000);
+      updatePending(item.id, { status: 'uploading', progress: 0, error: undefined });
+      const sent = await duo.sendMedia(
+        item.file,
+        replyId,
+        (progress) => updatePending(item.id, { progress }),
+        !captionSent ? caption : ''
+      );
+      if (sent) {
+        sentAny = true;
+        if (!captionSent && caption) captionSent = true;
+        discardPending(item.id);
+        scrollToBottom();
+      } else {
+        updatePending(item.id, {
+          status: 'error',
+          error: 'Upload failed. Tap retry.',
+          progress: 0
+        });
+      }
     }
-    setReplyTarget(null);
-    scrollToBottom();
+
+    setUploading(false);
+    if (sentAny) {
+      if (captionSent) setDraft('');
+      setReplyTarget(null);
+    }
+  }
+
+  function sendPending() {
+    if (uploading) return;
+    const batch = pending.filter((item) => item.status !== 'uploading');
+    if (!batch.length) return;
+    void uploadAttachments(batch, draft.trim());
+  }
+
+  function retryPending(id: string) {
+    if (uploading) return;
+    const item = pending.find((entry) => entry.id === id);
+    if (item) void uploadAttachments([item], '');
+  }
+
+  function onMediaSelect(files: File[]) {
+    queueFiles(files);
+  }
+
+  function onQuickSend(files: File[]) {
+    queueFiles(files, true);
   }
 
   function onVoiceSend(blob: Blob) {
@@ -251,7 +365,8 @@ export function ChatScreen() {
       blob instanceof File
         ? blob
         : new File([blob], `voice-${Date.now()}.webm`, { type: 'audio/webm' });
-    void duo.sendMedia(file, replyTarget?.id ?? null).then(() => {
+    void duo.sendMedia(file, replyTarget?.id ?? null).then((sent) => {
+      if (!sent) return;
       setReplyTarget(null);
       scrollToBottom();
     });
@@ -709,8 +824,15 @@ export function ChatScreen() {
               onChange={setDraft}
               onSend={send}
               onTyping={(typing) => duo.notifyTyping(typing)}
-              onMediaSelect={(files) => void onMediaSelect(files)}
+              onMediaSelect={onMediaSelect}
+              onQuickSend={onQuickSend}
               onVoiceSend={onVoiceSend}
+              pending={pending}
+              uploading={uploading}
+              onSendPending={sendPending}
+              onCancelPending={cancelPending}
+              onRemovePending={discardPending}
+              onRetryPending={retryPending}
               replyTo={replyTarget}
               replyAuthor={
                 replyTarget
@@ -861,8 +983,10 @@ function MessageRow({
     };
   }, []);
 
+  const hasMedia = Boolean(item.media || message.attachmentId);
   const bubbleClass = [
     mine ? 'bubble bubble-sent chat-bubble' : 'study-ai-bubble chat-bubble',
+    hasMedia ? 'chat-bubble-media' : '',
     selected ? 'bubble-selected' : '',
     flash ? 'message-flash' : ''
   ]
@@ -971,21 +1095,6 @@ function MessageRow({
         ) : null}
         {mine && <MessageStatus message={last} otherName={otherName} />}
       </div>
-
-      {!selectMode && (
-        <button
-          type="button"
-          className="message-more-btn"
-          aria-label="Message actions"
-          onClick={(event) => {
-            event.stopPropagation();
-            const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-            onMenu(rect.right, rect.top);
-          }}
-        >
-          <MoreVertical size={13} />
-        </button>
-      )}
     </div>
   );
 

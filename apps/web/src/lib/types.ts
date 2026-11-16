@@ -99,6 +99,20 @@ export type Preferences = {
   chatNotifications: boolean;
 };
 
+export type StudySeedMessage = {
+  id: string;
+  role: 'USER' | 'ASSISTANT';
+  text: string;
+  sortOrder: number;
+};
+
+export type StudySeedReply = {
+  id: string;
+  keywords: string;
+  answer: string;
+  sortOrder: number;
+};
+
 export type CallParticipant = {
   id: string;
   userId: string;

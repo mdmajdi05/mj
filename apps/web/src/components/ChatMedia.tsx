@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Download, FileText, Music, Play, X } from 'lucide-react';
+import { useMemo, useEffect, useRef, useState } from 'react';
+import { ChevronLeft, ChevronRight, Download, FileText, Pause, Play, X } from 'lucide-react';
 import { API } from '@/lib/api';
 import { formatFileSize } from '@/lib/utils';
 import type { Message } from '@/lib/types';
@@ -105,11 +105,113 @@ export function MediaGrid({
   );
 }
 
+function waveBars(seed: string, count = 34) {
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 31 + seed.charCodeAt(index)) & 0x7fffffff;
+  }
+  return Array.from({ length: count }, () => {
+    hash = (hash * 1103515245 + 12345) & 0x7fffffff;
+    return 7 + (hash % 23);
+  });
+}
+
+/**
+ * WhatsApp-style voice note: paused by default, custom waveform, play/pause,
+ * duration and tap-to-seek. Sound only starts after the user taps play, which
+ * also satisfies browser autoplay policies.
+ */
 export function AudioBubble({ message }: { message: Message }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [current, setCurrent] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [failed, setFailed] = useState(false);
+  const bars = useMemo(
+    () => waveBars(message.id || message.attachmentId || 'voice'),
+    [message.id, message.attachmentId]
+  );
+  const progress = duration > 0 ? Math.min(1, current / duration) : 0;
+
+  function toggle() {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (playing) {
+      audio.pause();
+      return;
+    }
+    void audio
+      .play()
+      .then(() => setPlaying(true))
+      .catch(() => setFailed(true));
+  }
+
+  function seek(event: React.MouseEvent<HTMLDivElement>) {
+    const audio = audioRef.current;
+    if (!audio || !duration) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    audio.currentTime = ratio * duration;
+    setCurrent(audio.currentTime);
+  }
+
   return (
     <div className="audio-bubble">
-      <Music size={16} />
-      <audio src={mediaUrl(message.attachmentId!)} controls preload="metadata" className="audio-player" />
+      <button
+        type="button"
+        className="audio-play"
+        onClick={(event) => {
+          event.stopPropagation();
+          toggle();
+        }}
+        aria-label={playing ? 'Pause voice message' : 'Play voice message'}
+      >
+        {playing ? <Pause size={16} /> : <Play size={16} />}
+      </button>
+
+      <div className="audio-wave-wrap">
+        <div
+          className="audio-wave"
+          onClick={(event) => {
+            event.stopPropagation();
+            seek(event);
+          }}
+          role="slider"
+          aria-label="Voice message position"
+          aria-valuemin={0}
+          aria-valuemax={Math.round(duration)}
+          aria-valuenow={Math.round(current)}
+          tabIndex={0}
+        >
+          {bars.map((height, index) => (
+            <span
+              key={index}
+              className={index / bars.length <= progress ? 'is-played' : ''}
+              style={{ height: `${height}px` }}
+            />
+          ))}
+        </div>
+        <span className="audio-time">
+          {durationOf(playing || current > 0 ? current : duration)}
+        </span>
+      </div>
+
+      {failed && <span className="audio-error">Tap to retry</span>}
+
+      <audio
+        ref={audioRef}
+        src={mediaUrl(message.attachmentId!)}
+        preload="metadata"
+        onLoadedMetadata={(event) => setDuration(event.currentTarget.duration || 0)}
+        onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime || 0)}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => {
+          setPlaying(false);
+          setCurrent(0);
+        }}
+        onError={() => setFailed(true)}
+      />
     </div>
   );
 }

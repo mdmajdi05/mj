@@ -23,6 +23,16 @@ type NotifyInput = {
  * Socket.IO. Message text and access codes must never be put in payloads.
  */
 export async function notifyUser(input: NotifyInput) {
+  // Chat notifications are controlled by the Host. Re-check centrally so no
+  // message path can bypass the per-account grant.
+  if (input.eventType === 'NEW_MESSAGE' || input.eventType === 'GAME_MESSAGE') {
+    const access = await prisma.userPreference.findUnique({
+      where: { userId: input.userId },
+      select: { chatNotifications: true }
+    });
+    if (access && access.chatNotifications === false) return null;
+  }
+
   const notification = await prisma.notification.create({
     data: {
       userId: input.userId,

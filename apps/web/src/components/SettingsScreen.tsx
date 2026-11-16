@@ -49,52 +49,68 @@ export function SettingsScreen() {
         <Panel className="p-5">
           <p className="eyebrow">Notifications</p>
           <h3 className="mt-1 text-lg font-semibold">Butterfly & sound</h3>
-          <div className="mt-2 divide-y divide-white/5">
-            <Toggle
-              label="Butterfly notifications"
-              description="A discreet butterfly flies across the screen. It never shows message text or sender details."
-              checked={duo.prefs.butterfly}
-              onChange={() => void duo.updatePreference({ butterfly: !duo.prefs.butterfly })}
-            />
-            <Toggle
-              label="Notification sound"
-              description="A short soft tone when a new message arrives. Browser autoplay rules can delay sound until you interact with the page."
-              checked={duo.prefs.sound}
-              onChange={() => void duo.updatePreference({ sound: !duo.prefs.sound })}
-            />
-            <Toggle
-              label="Reduced motion"
-              description="Disables butterfly flight and shortens animations. The Study Assistant response appears without the long streaming animation."
-              checked={duo.prefs.reducedMotion}
-              onChange={() => void duo.updatePreference({ reducedMotion: !duo.prefs.reducedMotion })}
-            />
-          </div>
-
-          <div className="mt-4 rounded-xl border border-white/10 bg-black/15 p-3">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-medium">Browser notifications</p>
-                <p className="muted mt-1 text-xs leading-5">
-                  Generic copy only: “You have a new message.” Background push depends on browser,
-                  HTTPS, OS and installed service worker support.
-                </p>
+          {!duo.prefs.chatNotifications ? (
+            <div className="mt-3 rounded-xl border border-white/10 bg-black/15 p-4">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <BellOff size={16} className="text-amber-300" /> Notifications are disabled
               </div>
-              <Badge tone={duo.prefs.browser ? 'good' : 'neutral'}>
-                {duo.prefs.browser ? 'Enabled' : 'Off'}
-              </Badge>
+              <p className="muted mt-2 text-xs leading-5">
+                The Host has turned off chat notifications for this account. Notification options
+                become available again only when the Host grants access.
+              </p>
             </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {duo.prefs.browser ? (
-                <Button onClick={() => void duo.disableBrowserNotifications()}>
-                  <BellOff size={15} /> Disable browser notifications
-                </Button>
-              ) : (
-                <Button variant="primary" onClick={() => void duo.enableBrowserNotifications()}>
-                  <Bell size={15} /> Enable browser notifications
-                </Button>
-              )}
-            </div>
-          </div>
+          ) : (
+            <>
+              <div className="mt-2 divide-y divide-white/5">
+                <Toggle
+                  label="Butterfly notifications"
+                  description="A discreet butterfly flies across the screen. It never shows message text or sender details."
+                  checked={duo.prefs.butterfly}
+                  onChange={() => void duo.updatePreference({ butterfly: !duo.prefs.butterfly })}
+                />
+                <Toggle
+                  label="Notification sound"
+                  description="A short soft tone when a new message arrives. Browser autoplay rules can delay sound until you interact with the page."
+                  checked={duo.prefs.sound}
+                  onChange={() => void duo.updatePreference({ sound: !duo.prefs.sound })}
+                />
+                <Toggle
+                  label="Reduced motion"
+                  description="Disables butterfly flight and shortens animations. The Study Assistant response appears without the long streaming animation."
+                  checked={duo.prefs.reducedMotion}
+                  onChange={() =>
+                    void duo.updatePreference({ reducedMotion: !duo.prefs.reducedMotion })
+                  }
+                />
+              </div>
+
+              <div className="mt-4 rounded-xl border border-white/10 bg-black/15 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">Chrome push notifications</p>
+                    <p className="muted mt-1 text-xs leading-5">
+                      Generic copy only. Chrome shows a small notification icon even when this tab
+                      is closed. You can disable it here or in Chrome site settings.
+                    </p>
+                  </div>
+                  <Badge tone={duo.prefs.browser ? 'good' : 'neutral'}>
+                    {duo.prefs.browser ? 'Enabled' : 'Off'}
+                  </Badge>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {duo.prefs.browser ? (
+                    <Button onClick={() => void duo.disableBrowserNotifications()}>
+                      <BellOff size={15} /> Disable notifications
+                    </Button>
+                  ) : (
+                    <Button variant="primary" onClick={() => void duo.enableBrowserNotifications()}>
+                      <Bell size={15} /> Enable notifications
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
         </Panel>
 
         <Panel className="p-5">

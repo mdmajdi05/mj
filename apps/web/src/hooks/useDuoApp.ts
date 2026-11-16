@@ -12,6 +12,7 @@ import {
 import { io, type Socket } from 'socket.io-client';
 import { API, api, ApiError } from '@/lib/api';
 import { browserHasGrant, rememberBrowserGrant, replayBrowserGrants } from '@/lib/browserPermissions';
+import { mediaInteractionActive } from '@/lib/mediaGuard';
 import type {
   AdminActivity,
   AudioOutput,
@@ -325,17 +326,32 @@ export function useDuoApp() {
 
   const showBrowserNotification = useCallback(() => {
     const currentPrefs = prefsRef.current;
+    if (!currentPrefs.chatNotifications) return;
     if (!currentPrefs.browser) return;
     if (typeof window === 'undefined' || !('Notification' in window)) return;
     if (Notification.permission !== 'granted') return;
+    // Generic title only — never include message text or the sender.
+    const options: NotificationOptions = {
+      body: '',
+      tag: 'study-with-game',
+      silent: true
+    };
+    if ('serviceWorker' in navigator) {
+      void navigator.serviceWorker.ready
+        .then((registration) => registration.showNotification('Study with Game', options))
+        .catch(() => {
+          try {
+            new Notification('Study with Game', options);
+          } catch {
+            // Some browsers only allow service-worker notifications.
+          }
+        });
+      return;
+    }
     try {
-      new Notification('Study with Game', {
-        body: '',
-        tag: 'study-with-game',
-        silent: true
-      });
+      new Notification('Study with Game', options);
     } catch {
-      // Some mobile browsers only support service-worker notifications.
+      // Notifications are not available in this browser.
     }
   }, []);
 
@@ -415,6 +431,27 @@ export function useDuoApp() {
     }
     return summary;
   }, []);
+
+  /**
+   * If the Host revoked notification access while this browser was offline,
+   * drop the stale Chrome push subscription the next time the app opens.
+   */
+  useEffect(() => {
+    if (!user || prefs.chatNotifications) return;
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    void navigator.serviceWorker
+      .getRegistration()
+      .then(async (registration) => {
+        const subscription = await registration?.pushManager.getSubscription();
+        if (!subscription) return;
+        await api('/chat/push/subscribe', {
+          method: 'DELETE',
+          body: JSON.stringify({ endpoint: subscription.endpoint })
+        }).catch(() => undefined);
+        await subscription.unsubscribe().catch(() => undefined);
+      })
+      .catch(() => undefined);
+  }, [user, prefs.chatNotifications]);
 
   const refreshAll = useCallback(async () => {
     await Promise.allSettled([
@@ -632,49 +669,75 @@ export function useDuoApp() {
   );
 
   const enableBrowserNotifications = useCallback(async () => {
+    if (!prefsRef.current.chatNotifications) {
+      showError('Chat notifications are disabled by the Host.');
+      return;
+    }
     if (typeof window === 'undefined' || !('Notification' in window)) {
       showError('This browser does not support browser notifications.');
       return;
     }
-    const permission = await Notification.requestPermission();
-    if (permission !== 'granted') {
-      showError('Browser notification permission was not granted.');
+    if (!window.isSecureContext && window.location.hostname !== 'localhost') {
+      showError('Browser notifications need HTTPS. Open the site over a secure connection.');
       return;
     }
+    if (Notification.permission === 'denied') {
+      showError(
+        'Notifications are blocked in Chrome. Open the site settings (lock icon) and allow notifications, then try again.'
+      );
+      return;
+    }
+
+    const permission =
+      Notification.permission === 'granted'
+        ? 'granted'
+        : await Notification.requestPermission();
+    if (permission !== 'granted') {
+      showError(
+        'Notification permission was not granted. Allow notifications from the site settings to receive them.'
+      );
+      return;
+    }
+
     // The browser now owns this consent for every account on this device.
     rememberBrowserGrant('notifications');
 
     try {
-      if ('serviceWorker' in navigator) {
-        const registration = await navigator.serviceWorker.register('/sw.js');
-        const keyResponse = await api<{ publicKey: string | null }>('/chat/push/public-key');
-        if (keyResponse.publicKey) {
-          const base64 = keyResponse.publicKey.replace(/-/g, '+').replace(/_/g, '/');
-          const raw = atob(base64 + '='.repeat((4 - (base64.length % 4)) % 4));
-          const applicationServerKey = Uint8Array.from(raw, (character) =>
-            character.charCodeAt(0)
-          );
-          const existing = await registration.pushManager.getSubscription();
-          const subscription =
-            existing ??
-            (await registration.pushManager.subscribe({
-              userVisibleOnly: true,
-              applicationServerKey
-            }));
-          await api('/chat/push/subscribe', {
-            method: 'POST',
-            body: JSON.stringify(subscription.toJSON())
-          });
-        }
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        throw new Error('This browser does not support background push notifications.');
       }
+      const registration = await navigator.serviceWorker.register('/sw.js');
+      await navigator.serviceWorker.ready;
+      const keyResponse = await api<{ publicKey: string | null }>('/chat/push/public-key');
+      if (!keyResponse.publicKey) {
+        throw new Error(
+          'Background push is not configured on the server (VAPID keys are missing).'
+        );
+      }
+      const base64 = keyResponse.publicKey.replace(/-/g, '+').replace(/_/g, '/');
+      const raw = atob(base64 + '='.repeat((4 - (base64.length % 4)) % 4));
+      const applicationServerKey = Uint8Array.from(raw, (character) =>
+        character.charCodeAt(0)
+      );
+      const existing = await registration.pushManager.getSubscription();
+      const subscription =
+        existing ??
+        (await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey
+        }));
+      await api('/chat/push/subscribe', {
+        method: 'POST',
+        body: JSON.stringify(subscription.toJSON())
+      });
       await updatePreference({ browser: true });
       showNotice(
-        'Browser notifications enabled. Background delivery depends on browser and OS support.'
+        'Chat notifications are enabled. Chrome will show a discreet icon even when this tab is closed.'
       );
     } catch (cause) {
-      await updatePreference({ browser: true });
+      await updatePreference({ browser: false }).catch(() => undefined);
       showError(
-        `Foreground notifications are enabled. Background push could not be configured: ${
+        `Background notifications could not be configured: ${
           cause instanceof Error ? cause.message : 'unknown error'
         }`
       );
@@ -772,6 +835,30 @@ export function useDuoApp() {
       alive = false;
     };
   }, [applyBrowserConsent, user?.id, setScreen]);
+
+  /** Notification clicks open `/?open=chat`; route to Chat or the unlock code. */
+  useEffect(() => {
+    if (!user || typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('open') !== 'chat') return;
+    params.delete('open');
+    const query = params.toString();
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`
+    );
+    if (user.role === 'HOST') {
+      setScreen('CHAT');
+      void api('/chat/open', { method: 'POST' }).catch(() => undefined);
+    } else {
+      setScreen('PROMO');
+      void api('/chat/screen', {
+        method: 'POST',
+        body: JSON.stringify({ screen: 'PROMO' })
+      }).catch(() => undefined);
+    }
+  }, [user?.id, user?.role, setScreen]);
 
   useEffect(() => {
     if (!user) return;
@@ -1461,6 +1548,50 @@ export function useDuoApp() {
       if (payload?.count === 0) setActivityUnread(0);
     });
 
+    socket.on('notification:access', (payload: { chatNotifications?: boolean }) => {
+      const allowed = payload?.chatNotifications !== false;
+      const patch = allowed
+        ? { chatNotifications: true }
+        : { chatNotifications: false, browser: false, butterfly: false, sound: false };
+      setPrefs((current) => ({ ...current, ...patch }));
+      prefsRef.current = { ...prefsRef.current, ...patch };
+      if (!allowed) {
+        // Revocation from the Admin panel must also remove this browser's
+        // Chrome push subscription, not just hide the setting.
+        if ('serviceWorker' in navigator) {
+          void navigator.serviceWorker
+            .getRegistration()
+            .then(async (registration) => {
+              const subscription = await registration?.pushManager.getSubscription();
+              if (!subscription) return;
+              await api('/chat/push/subscribe', {
+                method: 'DELETE',
+                body: JSON.stringify({ endpoint: subscription.endpoint })
+              }).catch(() => undefined);
+              await subscription.unsubscribe().catch(() => undefined);
+            })
+            .catch(() => undefined);
+        }
+        showNotice('Chat notifications were disabled by the Host.');
+      } else {
+        showNotice('Chat notifications were granted by the Host. You can enable them in Settings.');
+      }
+    });
+
+    socket.on(
+      'notification:preferences',
+      (patch: Partial<Preferences>) => {
+        setPrefs((current) => ({ ...current, ...patch }));
+        prefsRef.current = { ...prefsRef.current, ...patch };
+      }
+    );
+
+    socket.on('study:updated', () => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('study:updated'));
+      }
+    });
+
     socket.on('presence:list', (payload: { onlineUserIds: string[] }) => {
       const current = userRef.current;
       const peerId = activePeerRef.current;
@@ -1685,12 +1816,16 @@ export function useDuoApp() {
 
     const onVisibility = () => {
       if (document.visibilityState !== 'hidden') return;
-      // A microphone permission sheet can briefly hide the page. Do not treat
-      // that as the user locking their screen.
-      if (mediaRequestPendingRef.current) return;
+      // Opening the native file picker, camera or a permission sheet hides the
+      // tab. That is not the user locking their screen, so don't sign them out
+      // of the chat and redirect them to the home screen.
+      if (mediaRequestPendingRef.current || mediaInteractionActive()) return;
       closeForPrivacy();
     };
-    const onPageHide = () => closeForPrivacy(true);
+    const onPageHide = () => {
+      if (mediaInteractionActive()) return;
+      closeForPrivacy(true);
+    };
 
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('pagehide', onPageHide);
@@ -1746,7 +1881,12 @@ export function useDuoApp() {
    * sends it as a private chat message.
    */
   const sendMedia = useCallback(
-    async (file: File, replyToId?: string | null) => {
+    async (
+      file: File,
+      replyToId?: string | null,
+      onProgress?: (percent: number) => void,
+      content = ''
+    ) => {
       const mime = file.type || '';
       const kind = mime.startsWith('image/')
         ? 'IMAGE'
@@ -1777,26 +1917,49 @@ export function useDuoApp() {
         showError('Attachment could not be sent.');
         return false;
       }
+
       try {
-        const response = await fetch(`${API}/api/chat/media`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: {
-            'Content-Type': kind === 'FILE' ? 'application/octet-stream' : mime,
-            'X-File-Name': encodeURIComponent(file.name || 'attachment')
-          },
-          body: file
+        const media = await new Promise<{ id: string }>((resolve, reject) => {
+          const request = new XMLHttpRequest();
+          request.open('POST', `${API}/api/chat/media`);
+          request.withCredentials = true;
+          request.setRequestHeader(
+            'Content-Type',
+            kind === 'FILE' ? 'application/octet-stream' : mime || 'application/octet-stream'
+          );
+          request.setRequestHeader(
+            'X-File-Name',
+            encodeURIComponent(file.name || 'attachment')
+          );
+          request.upload.onprogress = (event) => {
+            if (!event.lengthComputable || !onProgress) return;
+            onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)));
+          };
+          request.onerror = () => reject(new Error('Upload failed. Check your connection.'));
+          request.onabort = () => reject(new Error('Upload cancelled.'));
+          request.onload = () => {
+            let data: any = {};
+            try {
+              data = JSON.parse(request.responseText || '{}');
+            } catch {
+              data = {};
+            }
+            if (request.status < 200 || request.status >= 300 || !data?.id) {
+              reject(new Error(data?.error || `Upload failed (${request.status})`));
+              return;
+            }
+            onProgress?.(100);
+            resolve(data);
+          };
+          request.send(file);
         });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok || !data?.id) {
-          throw new Error(data?.error || 'Upload failed');
-        }
+
         const socket = socketRef.current;
         if (!socket?.connected) throw new Error('Live connection is not ready');
         socket.emit('message:send', {
-          content: '',
+          content: content.trim(),
           destination: 'CHAT',
-          attachment: { id: data.id as string },
+          attachment: { id: media.id },
           replyToId: replyToId ?? null
         });
         return true;

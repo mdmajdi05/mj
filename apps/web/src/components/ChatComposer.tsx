@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Camera,
   File as FileIcon,
@@ -8,6 +9,7 @@ import {
   Image as ImageIcon,
   Mic,
   Paperclip,
+  RefreshCcw,
   Send,
   Smile,
   Square,
@@ -16,6 +18,10 @@ import {
 } from 'lucide-react';
 import type { Message } from '@/lib/types';
 import { Modal } from '@/components/ui';
+import {
+  endMediaInteraction,
+  holdMediaInteraction
+} from '@/lib/mediaGuard';
 
 const EMOJIS = ['😊', '😂', '❤️', '👍', '🙏', '🔥', '🎉', '😍', '😢', '🤔', '👏', '💜'];
 
@@ -25,13 +31,36 @@ function formatClock(total: number) {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
+function formatSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export type PendingAttachment = {
+  id: string;
+  file: File;
+  previewUrl: string;
+  kind: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
+  status: 'ready' | 'uploading' | 'error';
+  progress: number;
+  error?: string;
+};
+
 type ChatComposerProps = {
   value: string;
   onChange: (value: string) => void;
   onSend: () => void;
   onTyping: (typing: boolean) => void;
   onMediaSelect: (files: File[]) => void;
+  onQuickSend: (files: File[]) => void;
   onVoiceSend: (blob: Blob) => void;
+  pending?: PendingAttachment[];
+  uploading?: boolean;
+  onSendPending?: () => void;
+  onCancelPending?: () => void;
+  onRemovePending?: (id: string) => void;
+  onRetryPending?: (id: string) => void;
   replyTo?: Message | null;
   replyAuthor?: string;
   onCancelReply?: () => void;
@@ -40,10 +69,11 @@ type ChatComposerProps = {
 };
 
 /**
- * Compact rounded composer:
+ * Compact premium composer:
  * 4-dot menu (Camera / Attach / Gallery / File), emoji + input in the middle,
- * microphone when empty and Send as soon as there is text. The microphone
- * opens a real MediaRecorder voice mode with timer, waveform, cancel and send.
+ * microphone when empty and Send as soon as there is text or a pending file.
+ * The attachment menu is portalled and clamped to the viewport, so it is never
+ * clipped on phones or tablets.
  */
 export function ChatComposer({
   value,
@@ -51,7 +81,14 @@ export function ChatComposer({
   onSend,
   onTyping,
   onMediaSelect,
+  onQuickSend,
   onVoiceSend,
+  pending = [],
+  uploading = false,
+  onSendPending,
+  onCancelPending,
+  onRemovePending,
+  onRetryPending,
   replyTo,
   replyAuthor,
   onCancelReply,
@@ -59,11 +96,14 @@ export function ChatComposer({
   onCancelEdit
 }: ChatComposerProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState({ left: 8, top: 8, width: 280, above: true });
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraError, setCameraError] = useState('');
   const [cameraBusy, setCameraBusy] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
+  const [cameraFacing, setCameraFacing] = useState<'environment' | 'user'>('environment');
+  const [captured, setCaptured] = useState<{ file: File; url: string } | null>(null);
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
@@ -73,6 +113,7 @@ export function ChatComposer({
   );
 
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuButtonRef = useRef<HTMLButtonElement | null>(null);
   const emojiRef = useRef<HTMLDivElement | null>(null);
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
   const galleryRef = useRef<HTMLInputElement | null>(null);
@@ -107,6 +148,12 @@ export function ChatComposer({
     };
   }, [audioUrl]);
 
+  useEffect(() => {
+    return () => {
+      if (captured?.url) URL.revokeObjectURL(captured.url);
+    };
+  }, [captured?.url]);
+
   // The camera modal mounts after the state change, so attach the stream once
   // both the modal and the getUserMedia request are ready.
   useEffect(() => {
@@ -122,7 +169,14 @@ export function ChatComposer({
     if (!menuOpen && !emojiOpen) return;
     const handler = (event: Event) => {
       const target = event.target as Node;
-      if (menuOpen && menuRef.current && !menuRef.current.contains(target)) setMenuOpen(false);
+      if (
+        menuOpen &&
+        menuRef.current &&
+        !menuRef.current.contains(target) &&
+        !menuButtonRef.current?.contains(target)
+      ) {
+        setMenuOpen(false);
+      }
       if (emojiOpen && emojiRef.current && !emojiRef.current.contains(target)) setEmojiOpen(false);
     };
     window.addEventListener('mousedown', handler);
@@ -133,47 +187,111 @@ export function ChatComposer({
     };
   }, [menuOpen, emojiOpen]);
 
+  // The floating menu is anchored to the button but clamped inside the
+  // viewport. It flips above/below depending on the available space.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const update = () => {
+      const button = menuButtonRef.current;
+      if (!button) return;
+      const rect = button.getBoundingClientRect();
+      const width = Math.min(300, window.innerWidth - 16);
+      const height = 104;
+      const above = rect.top > height + 18;
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+      const top = above ? rect.top - height - 10 : rect.bottom + 10;
+      setMenuPos({ left, top, width, above });
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [menuOpen]);
+
+  function openFilePicker(ref: React.RefObject<HTMLInputElement | null>) {
+    // Shield the privacy guard: the native picker hides the document.
+    holdMediaInteraction(120000);
+    setMenuOpen(false);
+    ref.current?.click();
+  }
+
   function pickFiles(event: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files || []);
     event.target.value = '';
+    endMediaInteraction();
     setMenuOpen(false);
+    if (cameraOpen) closeCamera();
     if (files.length) onMediaSelect(files);
   }
 
-  async function openCamera() {
-    setMenuOpen(false);
-    if (!navigator.mediaDevices?.getUserMedia) {
-      cameraInputRef.current?.click();
-      return;
-    }
+  async function startCamera(facing: 'environment' | 'user') {
     setCameraError('');
-    setCameraOpen(true);
     setCameraReady(false);
     setCameraBusy(true);
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+    cameraStreamRef.current = null;
     try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('This browser cannot open the camera. Pick a photo from the gallery instead.');
+      }
+      if (!window.isSecureContext && window.location.hostname !== 'localhost') {
+        throw new Error('Camera access needs HTTPS. Open the site over a secure connection.');
+      }
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
+        video: { facingMode: { ideal: facing } },
         audio: false
       });
       cameraStreamRef.current = stream;
+      setCameraFacing(facing);
       setCameraReady(true);
-    } catch {
-      setCameraError('Camera access was blocked. You can still pick a photo instead.');
+    } catch (cause) {
+      const error = cause as DOMException;
+      const message =
+        error?.name === 'NotAllowedError' || error?.name === 'SecurityError'
+          ? 'Camera permission is blocked. Tap “Try again” and choose Allow, or enable Camera in your browser site settings.'
+          : error?.name === 'NotFoundError'
+            ? 'No camera was found on this device.'
+            : error?.name === 'NotReadableError'
+              ? 'The camera is already in use by another app. Close it and try again.'
+              : error?.message || 'Camera could not be started.';
+      setCameraError(message);
     } finally {
       setCameraBusy(false);
     }
   }
 
-  function closeCamera() {
+  async function openCamera() {
+    holdMediaInteraction(120000);
+    setMenuOpen(false);
+    setCaptured(null);
+    setCameraOpen(true);
+    await startCamera(cameraFacing);
+  }
+
+  function stopCamera() {
     cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
     cameraStreamRef.current = null;
     setCameraReady(false);
+  }
+
+  function closeCamera() {
+    stopCamera();
     setCameraOpen(false);
+    setCameraError('');
+    if (captured?.url) URL.revokeObjectURL(captured.url);
+    setCaptured(null);
+    endMediaInteraction();
   }
 
   async function capturePhoto() {
     const video = videoRef.current;
-    if (!video || !video.videoWidth) return;
+    if (!video || !video.videoWidth) {
+      setCameraError('The camera is still starting. Wait a moment and try again.');
+      return;
+    }
     const canvas = document.createElement('canvas');
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
@@ -185,15 +303,31 @@ export function ChatComposer({
     );
     if (!blob) return;
     const file = new File([blob], `camera-${Date.now()}.jpg`, { type: 'image/jpeg' });
-    closeCamera();
+    if (captured?.url) URL.revokeObjectURL(captured.url);
+    setCaptured({ file, url: URL.createObjectURL(blob) });
+  }
+
+  function sendCaptured() {
+    if (!captured) return;
+    const file = captured.file;
     // The captured photo is sent directly and never saved to the gallery.
-    onMediaSelect([file]);
+    onQuickSend([file]);
+    closeCamera();
+  }
+
+  function retakePhoto() {
+    if (captured?.url) URL.revokeObjectURL(captured.url);
+    setCaptured(null);
+    setCameraError('');
+    void startCamera(cameraFacing);
   }
 
   async function startRecording() {
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('unsupported');
+      holdMediaInteraction(120000);
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      endMediaInteraction();
       recordStreamRef.current = stream;
       chunksRef.current = [];
       const mimeType = [
@@ -220,6 +354,7 @@ export function ChatComposer({
       setSeconds(0);
       setRecording(true);
     } catch {
+      endMediaInteraction();
       onCancelReply?.();
       window.alert('Please allow microphone access to record a voice message.');
     }
@@ -255,7 +390,48 @@ export function ChatComposer({
   }
 
   const hasText = value.trim().length > 0;
+  const hasPending = pending.length > 0;
   const voiceMode = recording || Boolean(audioBlob);
+
+  const menu = menuOpen
+    ? createPortal(
+        <>
+          <div className="composer-menu-backdrop" onClick={() => setMenuOpen(false)} />
+          <div
+            ref={menuRef}
+            className="composer-menu-portal"
+            style={{ left: menuPos.left, top: menuPos.top, width: menuPos.width }}
+            role="menu"
+          >
+            <button type="button" role="menuitem" onClick={() => void openCamera()}>
+              <Camera size={21} />
+              <span>Camera</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => openFilePicker(attachRef)}
+            >
+              <Paperclip size={21} />
+              <span>Attach</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => openFilePicker(galleryRef)}
+            >
+              <ImageIcon size={21} />
+              <span>Gallery</span>
+            </button>
+            <button type="button" role="menuitem" onClick={() => openFilePicker(fileRef)}>
+              <FileIcon size={21} />
+              <span>File</span>
+            </button>
+          </div>
+        </>,
+        document.body
+      )
+    : null;
 
   if (voiceMode) {
     return (
@@ -301,12 +477,14 @@ export function ChatComposer({
 
   return (
     <div className="composer-wrap">
+      {menu}
       <input
         ref={cameraInputRef}
         type="file"
         accept="image/*"
         capture="environment"
         className="hidden"
+        onClick={() => holdMediaInteraction(120000)}
         onChange={pickFiles}
       />
       <input
@@ -320,12 +498,93 @@ export function ChatComposer({
       <input
         ref={attachRef}
         type="file"
-        accept=".pdf,.doc,.docx,.xls,.xlsx,.txt,.ppt,.pptx,.csv"
+        accept=".pdf,.doc,.docx,.xls,.xlsx,.txt,.ppt,.pptx,.csv,.zip"
         multiple
         className="hidden"
         onChange={pickFiles}
       />
       <input ref={fileRef} type="file" multiple className="hidden" onChange={pickFiles} />
+
+      {hasPending && (
+        <div className="composer-pending">
+          <div className="composer-pending-head">
+            <span>
+              {pending.length} attachment{pending.length === 1 ? '' : 's'}
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                className="composer-pending-cancel"
+                onClick={onCancelPending}
+                disabled={uploading}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="composer-pending-send"
+                onClick={onSendPending}
+                disabled={uploading}
+              >
+                {uploading ? 'Sending…' : 'Send'}
+              </button>
+            </div>
+          </div>
+          <div className="composer-pending-list">
+            {pending.map((item) => (
+              <div
+                key={item.id}
+                className={`composer-pending-item is-${item.status}`}
+                title={item.error || item.file.name}
+              >
+                {item.kind === 'IMAGE' ? (
+                  <img src={item.previewUrl} alt={item.file.name} />
+                ) : item.kind === 'VIDEO' ? (
+                  <video src={item.previewUrl} muted playsInline preload="metadata" />
+                ) : (
+                  <span className="composer-pending-file">
+                    <FileIcon size={18} />
+                  </span>
+                )}
+                <span className="composer-pending-meta">
+                  <span className="composer-pending-name">{item.file.name}</span>
+                  <span className="composer-pending-size">
+                    {item.status === 'uploading'
+                      ? `${item.progress}%`
+                      : item.status === 'error'
+                        ? item.error || 'Upload failed'
+                        : formatSize(item.file.size)}
+                  </span>
+                </span>
+                {item.status === 'uploading' && (
+                  <span className="composer-pending-progress">
+                    <span style={{ width: `${item.progress}%` }} />
+                  </span>
+                )}
+                {item.status === 'error' ? (
+                  <button
+                    type="button"
+                    className="composer-pending-action"
+                    onClick={() => onRetryPending?.(item.id)}
+                    aria-label="Retry upload"
+                  >
+                    <RefreshCcw size={13} />
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="composer-pending-action"
+                  onClick={() => onRemovePending?.(item.id)}
+                  disabled={uploading}
+                  aria-label="Remove attachment"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {replyTo && !editing && (
         <div className="composer-quote">
@@ -363,41 +622,19 @@ export function ChatComposer({
       )}
 
       <div className="composer-bar">
-        <div className="relative" ref={menuRef}>
-          <button
-            type="button"
-            className={`composer-icon composer-menu-btn ${menuOpen ? 'is-active' : ''}`}
-            aria-label="Open attachments"
-            aria-expanded={menuOpen}
-            onClick={() => {
-              setMenuOpen((open) => !open);
-              setEmojiOpen(false);
-            }}
-          >
-            {menuOpen ? <X size={20} /> : <Grid2X2 size={20} />}
-          </button>
-
-          {menuOpen && (
-            <div className="composer-menu" role="menu">
-              <button type="button" role="menuitem" onClick={() => void openCamera()}>
-                <Camera size={20} />
-                <span>Camera</span>
-              </button>
-              <button type="button" role="menuitem" onClick={() => attachRef.current?.click()}>
-                <Paperclip size={20} />
-                <span>Attach</span>
-              </button>
-              <button type="button" role="menuitem" onClick={() => galleryRef.current?.click()}>
-                <ImageIcon size={20} />
-                <span>Gallery</span>
-              </button>
-              <button type="button" role="menuitem" onClick={() => fileRef.current?.click()}>
-                <FileIcon size={20} />
-                <span>File</span>
-              </button>
-            </div>
-          )}
-        </div>
+        <button
+          ref={menuButtonRef}
+          type="button"
+          className={`composer-icon composer-menu-btn ${menuOpen ? 'is-active' : ''}`}
+          aria-label="Open attachments"
+          aria-expanded={menuOpen}
+          onClick={() => {
+            setMenuOpen((open) => !open);
+            setEmojiOpen(false);
+          }}
+        >
+          {menuOpen ? <X size={20} /> : <Grid2X2 size={20} />}
+        </button>
 
         <div className="composer-field">
           <textarea
@@ -422,6 +659,8 @@ export function ChatComposer({
               if (event.key === 'Escape') {
                 onCancelEdit?.();
                 onCancelReply?.();
+                setMenuOpen(false);
+                setEmojiOpen(false);
               }
             }}
           />
@@ -458,8 +697,14 @@ export function ChatComposer({
           </div>
         </div>
 
-        {hasText || editing ? (
-          <button type="button" className="composer-send" onClick={onSend} aria-label="Send message">
+        {hasText || editing || hasPending ? (
+          <button
+            type="button"
+            className="composer-send"
+            onClick={onSend}
+            aria-label={hasPending && !hasText ? 'Send attachments' : 'Send message'}
+            disabled={uploading && !hasText}
+          >
             <Send size={18} />
           </button>
         ) : (
@@ -474,19 +719,83 @@ export function ChatComposer({
         )}
       </div>
 
-      <Modal open={cameraOpen} title="Take a photo" onClose={closeCamera}>
+      <Modal
+        open={cameraOpen}
+        wide
+        title={captured ? 'Preview photo' : 'Take a photo'}
+        onClose={closeCamera}
+      >
         <div className="camera-modal">
-          <video ref={videoRef} playsInline muted className="camera-preview" />
-          {cameraBusy && <p className="muted text-xs">Starting camera…</p>}
-          {cameraError && <p className="text-xs text-rose-200">{cameraError}</p>}
+          {captured ? (
+            <img src={captured.url} alt="Captured preview" className="camera-preview" />
+          ) : (
+            <>
+              <div className="camera-stage">
+                <video ref={videoRef} playsInline muted className="camera-preview" />
+                {cameraBusy && <span className="camera-status">Starting camera…</span>}
+                {!cameraBusy && cameraReady && (
+                  <button
+                    type="button"
+                    className="camera-switch"
+                    aria-label="Switch camera"
+                    onClick={() =>
+                      void startCamera(cameraFacing === 'environment' ? 'user' : 'environment')
+                    }
+                  >
+                    <RefreshCcw size={17} />
+                  </button>
+                )}
+              </div>
+              {cameraError && (
+                <div className="camera-error" role="alert">
+                  <p>{cameraError}</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="composer-menu-fallback"
+                      onClick={() => void startCamera(cameraFacing)}
+                    >
+                      Try again
+                    </button>
+                    <button
+                      type="button"
+                      className="composer-menu-fallback"
+                      onClick={() => openFilePicker(cameraInputRef)}
+                    >
+                      Pick photo instead
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
         </div>
-        <div className="mt-4 flex justify-end gap-2">
-          <button type="button" className="composer-menu-fallback" onClick={() => cameraInputRef.current?.click()}>
-            Pick photo instead
-          </button>
-          <button type="button" className="composer-send composer-capture" onClick={() => void capturePhoto()}>
-            <Camera size={18} />
-          </button>
+        <div className="camera-actions">
+          {captured ? (
+            <>
+              <button type="button" className="camera-cancel" onClick={retakePhoto}>
+                Retake
+              </button>
+              <button type="button" className="composer-send camera-send" onClick={sendCaptured}>
+                <Send size={17} /> Send
+              </button>
+            </>
+          ) : (
+            <>
+              <button type="button" className="camera-cancel" onClick={closeCamera}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className={`camera-shutter ${cameraReady ? '' : 'is-disabled'}`}
+                onClick={() => void capturePhoto()}
+                aria-label="Capture photo"
+              >
+                <span />
+              </button>
+              <span className="camera-spacer" />
+            </>
+          )}
         </div>
       </Modal>
     </div>

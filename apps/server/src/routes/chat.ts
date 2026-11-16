@@ -77,6 +77,12 @@ async function wantsChatNotifications(userId: string) {
   return preference?.chatNotifications ?? true;
 }
 
+/** Tells every connected client that the Study Assistant content changed. */
+async function broadcastStudyUpdate() {
+  const users = await prisma.user.findMany({ select: { id: true } });
+  for (const user of users) emitToUser(user.id, 'study:updated', {});
+}
+
 async function pairOrThrow(userId: string) {
   const pair = await pairFor(userId);
   if (!pair) throw new HttpError(500, 'No chat partner is configured.');
@@ -764,6 +770,15 @@ chatRouter.post(
     if (!parsed.success) throw new HttpError(400, 'Invalid preferences');
 
     const { reducedMotion, defaultPeerMicOn, ...notificationPreferences } = parsed.data;
+    const enablingNotifications = Object.values(notificationPreferences).some(
+      (value) => value === true
+    );
+    if (enablingNotifications && !(await wantsChatNotifications(req.user!.id))) {
+      throw new HttpError(
+        403,
+        'Chat notifications are disabled by the Host. Ask the Host to grant notification access first.'
+      );
+    }
     if (Object.keys(notificationPreferences).length > 0) {
       await prisma.notificationPreference.upsert({
         where: { userId: req.user!.id },
@@ -789,6 +804,21 @@ chatRouter.post(
       await notifyPreferenceChange(req.user!.id, notificationPreferences.activitySharing);
     }
     res.json({ ok: true });
+  })
+);
+
+/* ------------------------------------------------------------------ */
+/* Study Assistant content (Host managed)                              */
+/* ------------------------------------------------------------------ */
+
+chatRouter.get(
+  '/study',
+  asyncHandler(async (_req: AuthRequest, res) => {
+    const [messages, replies] = await Promise.all([
+      prisma.studyMessage.findMany({ orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] }),
+      prisma.studyReply.findMany({ orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] })
+    ]);
+    res.json({ messages, replies });
   })
 );
 
@@ -1281,13 +1311,305 @@ chatRouter.post(
       },
       update: { chatNotifications: parsed.data.chatNotifications }
     });
+
+    if (!parsed.data.chatNotifications) {
+      // Revoking access must also stop notifications that already exist on the
+      // user's browser: clear browser delivery, disable prefs and drop every
+      // push endpoint registered for this account.
+      await prisma.notificationPreference.upsert({
+        where: { userId: parsed.data.userId },
+        create: {
+          userId: parsed.data.userId,
+          butterfly: false,
+          sound: false,
+          browser: false
+        },
+        update: { butterfly: false, sound: false, browser: false }
+      });
+      await prisma.pushSubscription.deleteMany({ where: { userId: parsed.data.userId } });
+    }
+
     await audit(req.user!.id, 'UPDATE_USER_FEATURES', parsed.data.userId, {
       chatNotifications: parsed.data.chatNotifications
+    });
+    emitToUser(parsed.data.userId, 'notification:access', {
+      chatNotifications: parsed.data.chatNotifications
+    });
+    emitToUser(parsed.data.userId, 'notification:preferences', {
+      chatNotifications: parsed.data.chatNotifications,
+      ...(parsed.data.chatNotifications
+        ? {}
+        : { butterfly: false, sound: false, browser: false })
     });
     res.json({ ok: true });
   })
 );
 
+
+/* ------------------------------------------------------------------ */
+/* Admin: Study Assistant content                                      */
+/* ------------------------------------------------------------------ */
+
+const studyRoleSchema = z.enum(['USER', 'ASSISTANT']);
+
+chatRouter.get(
+  '/admin/study',
+  requireHost,
+  asyncHandler(async (_req: AuthRequest, res) => {
+    const [messages, replies] = await Promise.all([
+      prisma.studyMessage.findMany({ orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] }),
+      prisma.studyReply.findMany({ orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] })
+    ]);
+    res.json({ messages, replies });
+  })
+);
+
+chatRouter.post(
+  '/admin/study/messages',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({
+        role: studyRoleSchema.optional(),
+        text: z.string().trim().min(1).max(5000).optional(),
+        items: z
+          .array(
+            z.object({
+              role: studyRoleSchema.default('ASSISTANT'),
+              text: z.string().trim().min(1).max(5000)
+            })
+          )
+          .min(1)
+          .max(100)
+          .optional()
+      })
+      .refine((value) => Boolean(value.items?.length || value.text), {
+        message: 'Add at least one message'
+      })
+      .safeParse(req.body);
+    if (!parsed.success) throw new HttpError(400, 'Invalid study message');
+
+    const items =
+      parsed.data.items ??
+      [{ role: parsed.data.role ?? 'ASSISTANT', text: parsed.data.text as string }];
+    const last = await prisma.studyMessage.findFirst({
+      orderBy: { sortOrder: 'desc' },
+      select: { sortOrder: true }
+    });
+    const start = (last?.sortOrder ?? -1) + 1;
+    const created = await prisma.$transaction(
+      items.map((item, index) =>
+        prisma.studyMessage.create({
+          data: {
+            role: item.role,
+            text: item.text,
+            sortOrder: start + index
+          }
+        })
+      )
+    );
+    await audit(req.user!.id, 'ADD_STUDY_MESSAGES', undefined, { count: created.length });
+    await broadcastStudyUpdate();
+    res.status(201).json(created);
+  })
+);
+
+chatRouter.patch(
+  '/admin/study/messages/:id',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({
+        role: studyRoleSchema.optional(),
+        text: z.string().trim().min(1).max(5000).optional()
+      })
+      .safeParse(req.body);
+    if (!parsed.success || (!parsed.data.role && !parsed.data.text)) {
+      throw new HttpError(400, 'Invalid study message');
+    }
+    const updated = await prisma.studyMessage.update({
+      where: { id: req.params.id },
+      data: {
+        ...(parsed.data.role ? { role: parsed.data.role } : {}),
+        ...(parsed.data.text ? { text: parsed.data.text } : {})
+      }
+    });
+    await audit(req.user!.id, 'UPDATE_STUDY_MESSAGE', updated.id);
+    await broadcastStudyUpdate();
+    res.json(updated);
+  })
+);
+
+chatRouter.delete(
+  '/admin/study/messages/:id',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    await prisma.studyMessage.deleteMany({ where: { id: req.params.id } });
+    await audit(req.user!.id, 'DELETE_STUDY_MESSAGE', req.params.id);
+    await broadcastStudyUpdate();
+    res.status(204).end();
+  })
+);
+
+chatRouter.delete(
+  '/admin/study/messages',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({ ids: z.array(z.string().min(1)).optional() })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) throw new HttpError(400, 'Invalid selection');
+    const result = await prisma.studyMessage.deleteMany({
+      where: parsed.data.ids?.length ? { id: { in: parsed.data.ids } } : {}
+    });
+    await audit(req.user!.id, 'DELETE_STUDY_MESSAGES', undefined, { count: result.count });
+    await broadcastStudyUpdate();
+    res.json({ ok: true, count: result.count });
+  })
+);
+
+chatRouter.post(
+  '/admin/study/messages/reorder',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({ ids: z.array(z.string().min(1)).min(1).max(500) })
+      .safeParse(req.body);
+    if (!parsed.success) throw new HttpError(400, 'Invalid order');
+    await prisma.$transaction(
+      parsed.data.ids.map((id, index) =>
+        prisma.studyMessage.update({ where: { id }, data: { sortOrder: index } })
+      )
+    );
+    await audit(req.user!.id, 'REORDER_STUDY_MESSAGES');
+    await broadcastStudyUpdate();
+    res.json({ ok: true });
+  })
+);
+
+chatRouter.post(
+  '/admin/study/replies',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({
+        keywords: z.string().trim().min(1).max(500).optional(),
+        answer: z.string().trim().min(1).max(8000).optional(),
+        items: z
+          .array(
+            z.object({
+              keywords: z.string().trim().min(1).max(500),
+              answer: z.string().trim().min(1).max(8000)
+            })
+          )
+          .min(1)
+          .max(100)
+          .optional()
+      })
+      .refine((value) => Boolean(value.items?.length || (value.keywords && value.answer)), {
+        message: 'Add at least one reply'
+      })
+      .safeParse(req.body);
+    if (!parsed.success) throw new HttpError(400, 'Invalid study reply');
+
+    const items =
+      parsed.data.items ??
+      [
+        {
+          keywords: parsed.data.keywords as string,
+          answer: parsed.data.answer as string
+        }
+      ];
+    const last = await prisma.studyReply.findFirst({
+      orderBy: { sortOrder: 'desc' },
+      select: { sortOrder: true }
+    });
+    const start = (last?.sortOrder ?? -1) + 1;
+    const created = await prisma.$transaction(
+      items.map((item, index) =>
+        prisma.studyReply.create({
+          data: { ...item, sortOrder: start + index }
+        })
+      )
+    );
+    await audit(req.user!.id, 'ADD_STUDY_REPLIES', undefined, { count: created.length });
+    await broadcastStudyUpdate();
+    res.status(201).json(created);
+  })
+);
+
+chatRouter.patch(
+  '/admin/study/replies/:id',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({
+        keywords: z.string().trim().min(1).max(500).optional(),
+        answer: z.string().trim().min(1).max(8000).optional()
+      })
+      .safeParse(req.body);
+    if (!parsed.success || (!parsed.data.keywords && !parsed.data.answer)) {
+      throw new HttpError(400, 'Invalid study reply');
+    }
+    const updated = await prisma.studyReply.update({
+      where: { id: req.params.id },
+      data: {
+        ...(parsed.data.keywords ? { keywords: parsed.data.keywords } : {}),
+        ...(parsed.data.answer ? { answer: parsed.data.answer } : {})
+      }
+    });
+    await audit(req.user!.id, 'UPDATE_STUDY_REPLY', updated.id);
+    await broadcastStudyUpdate();
+    res.json(updated);
+  })
+);
+
+chatRouter.delete(
+  '/admin/study/replies/:id',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    await prisma.studyReply.deleteMany({ where: { id: req.params.id } });
+    await audit(req.user!.id, 'DELETE_STUDY_REPLY', req.params.id);
+    await broadcastStudyUpdate();
+    res.status(204).end();
+  })
+);
+
+chatRouter.delete(
+  '/admin/study/replies',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({ ids: z.array(z.string().min(1)).optional() })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) throw new HttpError(400, 'Invalid selection');
+    const result = await prisma.studyReply.deleteMany({
+      where: parsed.data.ids?.length ? { id: { in: parsed.data.ids } } : {}
+    });
+    await audit(req.user!.id, 'DELETE_STUDY_REPLIES', undefined, { count: result.count });
+    await broadcastStudyUpdate();
+    res.json({ ok: true, count: result.count });
+  })
+);
+
+chatRouter.post(
+  '/admin/study/replies/reorder',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({ ids: z.array(z.string().min(1)).min(1).max(500) })
+      .safeParse(req.body);
+    if (!parsed.success) throw new HttpError(400, 'Invalid order');
+    await prisma.$transaction(
+      parsed.data.ids.map((id, index) =>
+        prisma.studyReply.update({ where: { id }, data: { sortOrder: index } })
+      )
+    );
+    await audit(req.user!.id, 'REORDER_STUDY_REPLIES');
+    await broadcastStudyUpdate();
+    res.json({ ok: true });
+  })
+);
 
 chatRouter.get(
   '/admin/game-messages',

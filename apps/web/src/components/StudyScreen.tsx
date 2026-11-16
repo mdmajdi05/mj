@@ -1,14 +1,17 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { BookOpen, Send, Sparkles, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Send, Sparkles, X } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
 import {
   studyAutoOpener,
   studyHistory,
   studyReply,
-  studySuggestions
+  studySuggestions,
+  type Reply
 } from '@/lib/study';
+import { api } from '@/lib/api';
+import type { StudySeedMessage, StudySeedReply } from '@/lib/types';
 import { formatTime } from '@/lib/utils';
 import { Badge, Button } from '@/components/ui';
 import { CallOrb, CallPanel } from '@/components/CallControls';
@@ -37,14 +40,41 @@ const seededHistory = (): StudyMessage[] =>
     at: atMinutesAgo(item.minutesAgo)
   }));
 
+/** Converts Host-managed seed messages into renderable chat rows. */
+function mapSeed(messages: StudySeedMessage[]): StudyMessage[] {
+  const total = messages.length;
+  return messages.map((item, index) => ({
+    id: `seed-${item.id}`,
+    role: item.role === 'USER' ? 'user' : 'assistant',
+    text: item.text,
+    at: atMinutesAgo(Math.max(1, (total - index) * 2))
+  }));
+}
+
+function toReplies(replies: StudySeedReply[]): Reply[] {
+  return replies.map((reply) => ({
+    keywords: reply.keywords
+      .split(',')
+      .map((keyword) => keyword.trim().toLowerCase())
+      .filter(Boolean),
+    answer: reply.answer
+  }));
+}
+
 export function StudyScreen() {
   const duo = useDuo();
-  const [messages, setMessages] = useState<StudyMessage[]>(seededHistory);
+  const [seed, setSeed] = useState<StudyMessage[]>(seededHistory);
+  const [conversation, setConversation] = useState<StudyMessage[]>([]);
+  const [replies, setReplies] = useState<Reply[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [serverHasContent, setServerHasContent] = useState(false);
   const [draft, setDraft] = useState('');
   const [typing, setTyping] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startedRef = useRef(false);
+
+  const messages = [...seed, ...conversation];
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -54,18 +84,48 @@ export function StudyScreen() {
     void duo.resumeSessionIfNeeded();
   }, [duo.resumeSessionIfNeeded]);
 
-  /** Opening the screen looks like an ongoing session: a target goes out, the assistant replies. */
+  const loadStudy = useCallback(async () => {
+    try {
+      const data = await api<{ messages: StudySeedMessage[]; replies: StudySeedReply[] }>(
+        '/chat/study'
+      );
+      const hasContent = Array.isArray(data.messages) && data.messages.length > 0;
+      setServerHasContent(hasContent);
+      if (hasContent) setSeed(mapSeed(data.messages));
+      setReplies(toReplies(Array.isArray(data.replies) ? data.replies : []));
+    } catch {
+      // Offline or first boot: keep the local fallback content.
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
   useEffect(() => {
-    if (startedRef.current) return;
+    void loadStudy();
+  }, [loadStudy]);
+
+  // Host edits are broadcast over Socket.IO and re-dispatched as a DOM event.
+  useEffect(() => {
+    const handler = () => void loadStudy();
+    window.addEventListener('study:updated', handler);
+    return () => window.removeEventListener('study:updated', handler);
+  }, [loadStudy]);
+
+  /**
+   * Local demo opener only runs when the Host has not configured any seed
+   * messages, so admin-managed content is never mixed with sample history.
+   */
+  useEffect(() => {
+    if (!loaded || serverHasContent || startedRef.current) return;
     startedRef.current = true;
     const sendTimer = setTimeout(() => {
-      setMessages((current) => [
+      setConversation((current) => [
         ...current,
         { id: nextId(), role: 'user', text: studyAutoOpener, at: new Date().toISOString() }
       ]);
       setTyping(true);
       timerRef.current = setTimeout(() => {
-        setMessages((current) => [
+        setConversation((current) => [
           ...current,
           {
             id: nextId(),
@@ -82,12 +142,12 @@ export function StudyScreen() {
       clearTimeout(sendTimer);
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, []);
+  }, [loaded, serverHasContent]);
 
   function ask(value: string) {
     const text = value.trim();
     if (!text) return;
-    setMessages((current) => [
+    setConversation((current) => [
       ...current,
       { id: nextId(), role: 'user', text, at: new Date().toISOString() }
     ]);
@@ -96,8 +156,8 @@ export function StudyScreen() {
     const delay = duo.prefs.reducedMotion ? 150 : 650 + Math.min(1100, text.length * 14);
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
-      const answer = studyReply(text);
-      setMessages((current) => [
+      const answer = studyReply(text, replies);
+      setConversation((current) => [
         ...current,
         { id: nextId(), role: 'assistant', text: answer, at: new Date().toISOString() }
       ]);

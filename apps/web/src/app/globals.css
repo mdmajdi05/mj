@@ -2928,3 +2928,453 @@ button:disabled {
   }
 }
 
+
+/* ---------------------------------------------------------------- */
+/* Premium composer, portalled attachment menu, pending tray, camera */
+/* ---------------------------------------------------------------- */
+
+.composer-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 78;
+  background: rgba(4, 2, 8, 0.42);
+  backdrop-filter: blur(2px);
+}
+
+.composer-menu-portal {
+  position: fixed;
+  z-index: 79;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.4rem;
+  border-radius: 18px;
+  border: 1px solid rgba(168, 85, 247, 0.34);
+  background: rgba(27, 20, 39, 0.98);
+  padding: 0.5rem;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.62);
+  animation: composerMenuPop 140ms ease;
+}
+
+@keyframes composerMenuPop {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.composer-menu-portal button {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  border-radius: 12px;
+  background: rgba(168, 85, 247, 0.1);
+  padding: 0.7rem 0.6rem;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: #f3e8ff;
+  transition: background 140ms ease;
+}
+
+.composer-menu-portal button:hover {
+  background: rgba(168, 85, 247, 0.24);
+}
+
+.composer-menu-portal button svg {
+  color: #c084fc;
+  flex-shrink: 0;
+}
+
+/* Pending attachment tray */
+.composer-pending {
+  border: 1px solid rgba(168, 85, 247, 0.28);
+  border-radius: 16px;
+  background: #17111f;
+  padding: 0.5rem 0.55rem;
+}
+
+.composer-pending-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0 0.15rem 0.4rem;
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.68);
+}
+
+.composer-pending-send,
+.composer-pending-cancel {
+  border-radius: 999px;
+  padding: 0.28rem 0.72rem;
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
+.composer-pending-send {
+  background: linear-gradient(135deg, #7c3aed, #db2777);
+  color: #fff;
+}
+
+.composer-pending-cancel {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.composer-pending-send:disabled,
+.composer-pending-cancel:disabled {
+  opacity: 0.45;
+}
+
+.composer-pending-list {
+  display: flex;
+  gap: 0.45rem;
+  overflow-x: auto;
+  padding-bottom: 0.15rem;
+  scrollbar-width: thin;
+}
+
+.composer-pending-item {
+  position: relative;
+  flex: 0 0 auto;
+  width: 7.6rem;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0f0c16;
+}
+
+.composer-pending-item.is-error {
+  border-color: rgba(244, 63, 94, 0.55);
+}
+
+.composer-pending-item.is-uploading {
+  border-color: rgba(168, 85, 247, 0.55);
+}
+
+.composer-pending-item img,
+.composer-pending-item video {
+  display: block;
+  height: 4.4rem;
+  width: 100%;
+  object-fit: cover;
+  background: #0b0911;
+}
+
+.composer-pending-file {
+  display: grid;
+  height: 4.4rem;
+  place-items: center;
+  color: #c084fc;
+}
+
+.composer-pending-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.32rem 0.42rem;
+  font-size: 0.6rem;
+}
+
+.composer-pending-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #f5e9ff;
+}
+
+.composer-pending-size {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.composer-pending-item.is-error .composer-pending-size {
+  color: #fda4af;
+}
+
+.composer-pending-progress {
+  display: block;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.composer-pending-progress span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #a855f7, #ec4899);
+  transition: width 120ms linear;
+}
+
+.composer-pending-action {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  display: grid;
+  height: 1.15rem;
+  width: 1.15rem;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.composer-pending-action + .composer-pending-action {
+  top: 1.7rem;
+}
+
+.composer-pending-action:disabled {
+  opacity: 0.4;
+}
+
+/* Camera capture + preview */
+.camera-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.camera-stage {
+  position: relative;
+  display: grid;
+  aspect-ratio: 4 / 3;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 16px;
+  background: #05040a;
+}
+
+.camera-preview {
+  display: block;
+  width: 100%;
+  max-height: min(60vh, 30rem);
+  border-radius: 16px;
+  background: #05040a;
+  object-fit: contain;
+}
+
+.camera-status {
+  position: absolute;
+  bottom: 0.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62);
+  padding: 0.3rem 0.8rem;
+  font-size: 0.7rem;
+  color: #fff;
+}
+
+.camera-switch {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.6rem;
+  display: grid;
+  height: 2.2rem;
+  width: 2.2rem;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+}
+
+.camera-error {
+  margin-top: 0.6rem;
+  border-radius: 12px;
+  border: 1px solid rgba(244, 63, 94, 0.35);
+  background: rgba(244, 63, 94, 0.12);
+  padding: 0.6rem 0.7rem;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: #fecdd3;
+}
+
+.camera-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.camera-cancel {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.5rem 1rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #fff;
+}
+
+.camera-shutter {
+  display: grid;
+  height: 3.4rem;
+  width: 3.4rem;
+  place-items: center;
+  border-radius: 999px;
+  border: 3px solid rgba(255, 255, 255, 0.85);
+  background: transparent;
+}
+
+.camera-shutter span {
+  display: block;
+  height: 2.5rem;
+  width: 2.5rem;
+  border-radius: 999px;
+  background: #fff;
+  transition: transform 120ms ease;
+}
+
+.camera-shutter:active span {
+  transform: scale(0.9);
+}
+
+.camera-shutter.is-disabled {
+  opacity: 0.4;
+}
+
+.camera-spacer {
+  width: 3.4rem;
+}
+
+.camera-send {
+  display: inline-flex;
+  width: auto;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 999px;
+  padding: 0.55rem 1rem;
+}
+
+/* Full-bleed media bubbles */
+.chat-bubble-media {
+  max-width: min(23rem, 82vw);
+  overflow: hidden;
+  padding: 0.25rem;
+}
+
+.chat-bubble-media .media-grid,
+.chat-bubble-media .media-grid-one {
+  max-width: 100%;
+  margin: 0;
+  border-radius: 14px;
+}
+
+.chat-bubble-media .media-grid-one .media-tile-media {
+  max-height: min(26rem, 58vh);
+}
+
+.chat-bubble-media > p {
+  padding: 0.35rem 0.5rem 0.1rem;
+}
+
+.chat-bubble-media .chat-bubble-meta {
+  padding: 0.1rem 0.5rem 0.2rem;
+  margin-top: 0.1rem;
+}
+
+.chat-bubble-media .quoted-message {
+  margin-bottom: 0.3rem;
+}
+
+/* Custom voice-note player */
+.audio-bubble {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: min(15.5rem, 64vw);
+  max-width: min(19rem, 76vw);
+  padding: 0.15rem 0.2rem;
+  background: transparent;
+  color: #f5e9ff;
+}
+
+.audio-play {
+  display: grid;
+  height: 2.3rem;
+  width: 2.3rem;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #7c3aed, #db2777);
+  color: #fff;
+  box-shadow: 0 3px 12px rgba(147, 51, 234, 0.4);
+}
+
+.audio-wave-wrap {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.audio-wave {
+  display: flex;
+  height: 2rem;
+  align-items: center;
+  gap: 2px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.audio-wave span {
+  flex: 1;
+  min-width: 2px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.26);
+  transition: background 120ms ease;
+}
+
+.audio-wave span.is-played {
+  background: linear-gradient(180deg, #e9d5ff, #f472b6);
+}
+
+.audio-wave:focus-visible {
+  outline: 2px solid rgba(192, 132, 252, 0.7);
+  outline-offset: 2px;
+}
+
+.audio-time {
+  font-size: 0.62rem;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.audio-error {
+  font-size: 0.62rem;
+  color: #fda4af;
+}
+
+@media (max-width: 640px) {
+  .composer-wrap {
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+  }
+
+  .chat-bubble-media {
+    max-width: 88vw;
+  }
+
+  .camera-preview {
+    max-height: 55vh;
+  }
+
+  .audio-bubble {
+    min-width: min(14.5rem, 68vw);
+  }
+
+  .composer-pending-item {
+    width: 7rem;
+  }
+}
+
+@media (max-width: 380px) {
+  .composer-menu-portal {
+    grid-template-columns: 1fr;
+  }
+}

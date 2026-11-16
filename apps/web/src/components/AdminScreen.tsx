@@ -4,13 +4,18 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   ArchiveRestore,
+  ArrowDown,
+  ArrowUp,
   Bell,
   BellOff,
+  BookOpen,
   Check,
   Gamepad2,
   History,
   MessageCircle,
   Mic,
+  Pencil,
+  Plus,
   Phone,
   RefreshCw,
   RotateCcw,
@@ -39,13 +44,23 @@ type AdminUser = {
   lastSeenAt?: string | null;
   chatNotifications: boolean;
 };
-type Tab = 'overview' | 'chat' | 'deleted' | 'features' | 'game' | 'permissions' | 'promo' | 'activity';
+type Tab =
+  | 'overview'
+  | 'chat'
+  | 'deleted'
+  | 'features'
+  | 'study'
+  | 'game'
+  | 'permissions'
+  | 'promo'
+  | 'activity';
 
 const tabs: Array<{ id: Tab; label: string; icon: React.ReactNode }> = [
   { id: 'overview', label: 'Overview', icon: <Activity size={15} /> },
   { id: 'chat', label: 'Chat history', icon: <MessageCircle size={15} /> },
   { id: 'deleted', label: 'Deleted messages', icon: <RotateCcw size={15} /> },
   { id: 'features', label: 'User features', icon: <Bell size={15} /> },
+  { id: 'study', label: 'Study assistance', icon: <BookOpen size={15} /> },
   { id: 'game', label: 'Game messages', icon: <Gamepad2 size={15} /> },
   { id: 'permissions', label: 'Permissions', icon: <Shield size={15} /> },
   { id: 'promo', label: 'Promo code', icon: <Ticket size={15} /> },
@@ -675,6 +690,8 @@ export function AdminScreen() {
         </Panel>
       )}
 
+      {tab === 'study' && <StudyAdminPanel />}
+
       {tab === 'game' && (
         <Panel className="p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1029,6 +1046,483 @@ function PermissionCard({
             </Button>
           )}
       </div>
+    </div>
+  );
+}
+
+type StudyMessageRow = {
+  id: string;
+  role: string;
+  text: string;
+  sortOrder: number;
+};
+
+type StudyReplyRow = {
+  id: string;
+  keywords: string;
+  answer: string;
+  sortOrder: number;
+};
+
+/** Host-managed Study Assistant seed messages and keyword replies. */
+function StudyAdminPanel() {
+  const duo = useDuo();
+  const [messages, setMessages] = useState<StudyMessageRow[]>([]);
+  const [replies, setReplies] = useState<StudyReplyRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState('');
+  const [bulkMessages, setBulkMessages] = useState('');
+  const [bulkRole, setBulkRole] = useState<'ASSISTANT' | 'USER'>('ASSISTANT');
+  const [replyKeywords, setReplyKeywords] = useState('');
+  const [replyAnswer, setReplyAnswer] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const data = await api<{ messages: StudyMessageRow[]; replies: StudyReplyRow[] }>(
+        '/chat/admin/study'
+      );
+      setMessages(data.messages || []);
+      setReplies(data.replies || []);
+    } catch (cause) {
+      duo.setError(cause instanceof Error ? cause.message : 'Could not load Study content');
+    } finally {
+      setLoading(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function run(key: string, action: () => Promise<unknown>) {
+    setBusy(key);
+    try {
+      await action();
+      await load();
+    } catch (cause) {
+      duo.setError(cause instanceof Error ? cause.message : 'Study update failed');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  function addMessages() {
+    const lines = bulkMessages
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (!lines.length) return;
+    void run('add-messages', () =>
+      api('/chat/admin/study/messages', {
+        method: 'POST',
+        body: JSON.stringify({
+          items: lines.map((text) => ({ role: bulkRole, text }))
+        })
+      })
+    ).then(() => setBulkMessages(''));
+  }
+
+  function addReply() {
+    if (!replyKeywords.trim() || !replyAnswer.trim()) return;
+    void run('add-reply', () =>
+      api('/chat/admin/study/replies', {
+        method: 'POST',
+        body: JSON.stringify({
+          keywords: replyKeywords.trim(),
+          answer: replyAnswer.trim()
+        })
+      })
+    ).then(() => {
+      setReplyKeywords('');
+      setReplyAnswer('');
+    });
+  }
+
+  function moveMessage(index: number, direction: -1 | 1) {
+    const target = index + direction;
+    if (target < 0 || target >= messages.length) return;
+    const next = [...messages];
+    [next[index], next[target]] = [next[target], next[index]];
+    setMessages(next);
+    void run('order-messages', () =>
+      api('/chat/admin/study/messages/reorder', {
+        method: 'POST',
+        body: JSON.stringify({ ids: next.map((row) => row.id) })
+      })
+    );
+  }
+
+  function moveReply(index: number, direction: -1 | 1) {
+    const target = index + direction;
+    if (target < 0 || target >= replies.length) return;
+    const next = [...replies];
+    [next[index], next[target]] = [next[target], next[index]];
+    setReplies(next);
+    void run('order-replies', () =>
+      api('/chat/admin/study/replies/reorder', {
+        method: 'POST',
+        body: JSON.stringify({ ids: next.map((row) => row.id) })
+      })
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <Panel className="p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="eyebrow">Study assistance</p>
+            <h3 className="mt-1 text-lg font-semibold">Conversation messages</h3>
+            <p className="muted mt-1 text-sm leading-6">
+              These messages appear instantly in the Study Assistant chat. Paste one message per
+              line to add several at once. Changes are pushed live to open chats.
+            </p>
+          </div>
+          {messages.length > 0 && (
+            <Button
+              variant="danger"
+              disabled={busy === 'clear-messages'}
+              onClick={() => {
+                if (!window.confirm('Delete every Study Assistant message?')) return;
+                void run('clear-messages', () =>
+                  api('/chat/admin/study/messages', {
+                    method: 'DELETE',
+                    body: JSON.stringify({})
+                  })
+                );
+              }}
+            >
+              <Trash2 size={14} /> Delete all
+            </Button>
+          )}
+        </div>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-[1fr_170px]">
+          <textarea
+            className="field min-h-[110px] resize-y text-sm"
+            value={bulkMessages}
+            onChange={(event) => setBulkMessages(event.target.value)}
+            placeholder={'One message per line�\nExample: Focus session start karo.'}
+          />
+          <div className="flex flex-col gap-2">
+            <select
+              className="field text-sm"
+              value={bulkRole}
+              onChange={(event) => setBulkRole(event.target.value as 'ASSISTANT' | 'USER')}
+            >
+              <option value="ASSISTANT">Assistant message</option>
+              <option value="USER">User message</option>
+            </select>
+            <Button
+              variant="primary"
+              disabled={busy === 'add-messages' || !bulkMessages.trim()}
+              onClick={addMessages}
+            >
+              <Plus size={14} /> Add messages
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-4 space-y-2">
+          {loading && <p className="muted text-sm">Loading�</p>}
+          {!loading &&
+            messages.map((message, index) => (
+              <StudyMessageItem
+                key={message.id}
+                message={message}
+                index={index}
+                total={messages.length}
+                busy={busy}
+                onMove={moveMessage}
+                onDelete={() => {
+                  if (!window.confirm('Delete this Study message?')) return;
+                  void run(`delete-${message.id}`, () =>
+                    api(`/chat/admin/study/messages/${message.id}`, { method: 'DELETE' })
+                  );
+                }}
+                onSave={(role, text) =>
+                  run(`save-${message.id}`, () =>
+                    api(`/chat/admin/study/messages/${message.id}`, {
+                      method: 'PATCH',
+                      body: JSON.stringify({ role, text })
+                    })
+                  )
+                }
+              />
+            ))}
+          {!loading && !messages.length && (
+            <EmptyState
+              icon={<BookOpen size={24} />}
+              title="No Study messages yet"
+              description="Add messages above. Until then the Study chat shows its built-in sample history."
+            />
+          )}
+        </div>
+      </Panel>
+
+      <Panel className="p-5">
+        <p className="eyebrow">Study assistance</p>
+        <h3 className="mt-1 text-lg font-semibold">Keyword replies</h3>
+        <p className="muted mt-1 text-sm leading-6">
+          When a user message contains any keyword, the first matching reply is sent. Separate
+          keywords with commas. Replies marked higher in the list win ties.
+        </p>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <input
+            className="field text-sm"
+            value={replyKeywords}
+            onChange={(event) => setReplyKeywords(event.target.value)}
+            placeholder="focus, concentration, distract"
+          />
+          <Button
+            variant="primary"
+            disabled={busy === 'add-reply' || !replyKeywords.trim() || !replyAnswer.trim()}
+            onClick={addReply}
+          >
+            <Plus size={14} /> Add reply
+          </Button>
+        </div>
+        <textarea
+          className="field mt-3 min-h-[90px] w-full resize-y text-sm"
+          value={replyAnswer}
+          onChange={(event) => setReplyAnswer(event.target.value)}
+          placeholder="Reply text shown in the Study chat�"
+        />
+
+        <div className="mt-4 space-y-2">
+          {replies.map((reply, index) => (
+            <StudyReplyItem
+              key={reply.id}
+              reply={reply}
+              index={index}
+              total={replies.length}
+              busy={busy}
+              onMove={moveReply}
+              onDelete={() => {
+                if (!window.confirm('Delete this Study reply?')) return;
+                void run(`delete-reply-${reply.id}`, () =>
+                  api(`/chat/admin/study/replies/${reply.id}`, { method: 'DELETE' })
+                );
+              }}
+              onSave={(keywords, answer) =>
+                run(`save-reply-${reply.id}`, () =>
+                  api(`/chat/admin/study/replies/${reply.id}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ keywords, answer })
+                  })
+                )
+              }
+            />
+          ))}
+          {!replies.length && (
+            <p className="muted text-sm">
+              No replies yet. The built-in keyword engine is used until you add one.
+            </p>
+          )}
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function StudyMessageItem({
+  message,
+  index,
+  total,
+  busy,
+  onMove,
+  onDelete,
+  onSave
+}: {
+  message: StudyMessageRow;
+  index: number;
+  total: number;
+  busy: string;
+  onMove: (index: number, direction: -1 | 1) => void;
+  onDelete: () => void;
+  onSave: (role: string, text: string) => Promise<unknown>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(message.text);
+  const [role, setRole] = useState(message.role);
+
+  useEffect(() => {
+    setText(message.text);
+    setRole(message.role);
+  }, [message.text, message.role]);
+
+  const saving = busy === `save-${message.id}`;
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-black/15 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Badge tone={message.role === 'USER' ? 'accent' : 'good'}>
+          {message.role === 'USER' ? 'User' : 'Assistant'}
+        </Badge>
+        <div className="flex items-center gap-1">
+          <Button
+            aria-label="Move up"
+            disabled={index === 0 || busy === 'order-messages'}
+            onClick={() => onMove(index, -1)}
+          >
+            <ArrowUp size={14} />
+          </Button>
+          <Button
+            aria-label="Move down"
+            disabled={index === total - 1 || busy === 'order-messages'}
+            onClick={() => onMove(index, 1)}
+          >
+            <ArrowDown size={14} />
+          </Button>
+          <Button
+            aria-label={editing ? 'Cancel edit' : 'Edit message'}
+            disabled={saving}
+            onClick={() => setEditing((current) => !current)}
+          >
+            {editing ? <X size={14} /> : <Pencil size={14} />}
+          </Button>
+          <Button
+            variant="danger"
+            aria-label="Delete message"
+            disabled={busy === `delete-${message.id}`}
+            onClick={onDelete}
+          >
+            <Trash2 size={14} />
+          </Button>
+        </div>
+      </div>
+
+      {editing ? (
+        <div className="mt-2 space-y-2">
+          <select
+            className="field text-sm"
+            value={role}
+            onChange={(event) => setRole(event.target.value)}
+          >
+            <option value="ASSISTANT">Assistant message</option>
+            <option value="USER">User message</option>
+          </select>
+          <textarea
+            className="field min-h-[80px] w-full resize-y text-sm"
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+          />
+          <Button
+            variant="primary"
+            disabled={saving || !text.trim()}
+            onClick={() => {
+              void onSave(role, text.trim()).then(() => setEditing(false));
+            }}
+          >
+            <Check size={14} /> {saving ? 'Saving�' : 'Save'}
+          </Button>
+        </div>
+      ) : (
+        <p className="mt-2 whitespace-pre-line break-words text-sm leading-6">{message.text}</p>
+      )}
+    </div>
+  );
+}
+
+function StudyReplyItem({
+  reply,
+  index,
+  total,
+  busy,
+  onMove,
+  onDelete,
+  onSave
+}: {
+  reply: StudyReplyRow;
+  index: number;
+  total: number;
+  busy: string;
+  onMove: (index: number, direction: -1 | 1) => void;
+  onDelete: () => void;
+  onSave: (keywords: string, answer: string) => Promise<unknown>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [keywords, setKeywords] = useState(reply.keywords);
+  const [answer, setAnswer] = useState(reply.answer);
+
+  useEffect(() => {
+    setKeywords(reply.keywords);
+    setAnswer(reply.answer);
+  }, [reply.keywords, reply.answer]);
+
+  const saving = busy === `save-reply-${reply.id}`;
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-black/15 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-1">
+          {reply.keywords.split(',').map((keyword) => (
+            <Badge key={keyword} tone="neutral">
+              {keyword.trim()}
+            </Badge>
+          ))}
+        </div>
+        <div className="flex items-center gap-1">
+          <Button
+            aria-label="Move up"
+            disabled={index === 0 || busy === 'order-replies'}
+            onClick={() => onMove(index, -1)}
+          >
+            <ArrowUp size={14} />
+          </Button>
+          <Button
+            aria-label="Move down"
+            disabled={index === total - 1 || busy === 'order-replies'}
+            onClick={() => onMove(index, 1)}
+          >
+            <ArrowDown size={14} />
+          </Button>
+          <Button
+            aria-label={editing ? 'Cancel edit' : 'Edit reply'}
+            disabled={saving}
+            onClick={() => setEditing((current) => !current)}
+          >
+            {editing ? <X size={14} /> : <Pencil size={14} />}
+          </Button>
+          <Button
+            variant="danger"
+            aria-label="Delete reply"
+            disabled={busy === `delete-reply-${reply.id}`}
+            onClick={onDelete}
+          >
+            <Trash2 size={14} />
+          </Button>
+        </div>
+      </div>
+
+      {editing ? (
+        <div className="mt-2 space-y-2">
+          <input
+            className="field w-full text-sm"
+            value={keywords}
+            onChange={(event) => setKeywords(event.target.value)}
+            placeholder="keyword1, keyword2"
+          />
+          <textarea
+            className="field min-h-[90px] w-full resize-y text-sm"
+            value={answer}
+            onChange={(event) => setAnswer(event.target.value)}
+          />
+          <Button
+            variant="primary"
+            disabled={saving || !keywords.trim() || !answer.trim()}
+            onClick={() => {
+              void onSave(keywords.trim(), answer.trim()).then(() => setEditing(false));
+            }}
+          >
+            <Check size={14} /> {saving ? 'Saving�' : 'Save'}
+          </Button>
+        </div>
+      ) : (
+        <p className="mt-2 whitespace-pre-line break-words text-sm leading-6">{reply.answer}</p>
+      )}
     </div>
   );
 }

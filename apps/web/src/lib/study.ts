@@ -61,12 +61,12 @@ export const studySuggestions = [
   'Phone distraction kaise rokun?'
 ];
 
-type Reply = {
+export type Reply = {
   keywords: string[];
   answer: string;
 };
 
-const replies: Reply[] = [
+export const defaultReplies: Reply[] = [
   {
     keywords: ['focus', 'concentrat', 'distract', 'dhyan', 'concentration'],
     answer:
@@ -172,9 +172,10 @@ const replies: Reply[] = [
   }
 ];
 
-export function studyReply(input: string): string {
+export function studyReply(input: string, custom?: Reply[]): string {
   const text = input.toLowerCase();
-  const scored = replies
+  const source = custom && custom.length ? custom : defaultReplies;
+  const scored = source
     .map((reply) => ({
       reply,
       score: reply.keywords.reduce(
