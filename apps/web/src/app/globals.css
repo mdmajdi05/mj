@@ -2418,9 +2418,37 @@ button:disabled {
 
 /* Message bubble additions */
 .chat-bubble {
-  max-width: min(82%, 30rem);
   touch-action: pan-y;
   transition: outline-color 150ms ease, box-shadow 200ms ease;
+}
+
+/* Text bubbles size to their content and may use the full width allowed by
+   their flex wrapper. Media frames keep their own explicit widths below. */
+.chat-bubble:not(.chat-bubble-media) {
+  width: fit-content;
+  max-width: 100%;
+  padding: 9px 12px;
+  overflow-wrap: break-word;
+  word-break: normal;
+  hyphens: none;
+}
+
+/* Flex wrapper shared by sent and received rows: both get the same fixed
+   ceiling of the chat container while still shrinking to short messages. */
+.message-row > .chat-bubble-wrap,
+.chat-ai-row > .chat-bubble-wrap {
+  display: flex;
+  min-width: 0;
+  max-width: 80%;
+}
+
+.message-row > .chat-bubble-wrap.has-media,
+.chat-ai-row > .chat-bubble-wrap.has-media {
+  max-width: 100%;
+}
+
+.chat-bubble:not(.chat-bubble-media) > .chat-bubble-meta {
+  margin-top: 2px;
 }
 
 .chat-bubble-meta {

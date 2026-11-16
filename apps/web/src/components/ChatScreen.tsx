@@ -1132,7 +1132,10 @@ function MessageRow({
   );
 
   const content = (
-    <div style={{ transform: offset ? `translateX(${offset}px)` : undefined }} className="relative">
+    <div
+      style={{ transform: offset ? `translateX(${offset}px)` : undefined }}
+      className={`relative chat-bubble-wrap${hasMedia ? ' has-media' : ''}`}
+    >
       {offset > 12 && (
         <span className="swipe-reply-hint" style={{ opacity: Math.min(offset / 60, 1) }}>
           <Reply size={16} />
