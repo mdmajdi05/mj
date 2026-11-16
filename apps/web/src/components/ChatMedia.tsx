@@ -94,16 +94,6 @@ export function MediaGrid({
           </>
         );
 
-        // Photos stay inline in the conversation. Opening them full-screen is
-        // intentionally disabled; only videos need a player overlay.
-        if (!isVideo(message)) {
-          return (
-            <div key={message.id} className="media-tile" aria-label="Photo">
-              {content}
-            </div>
-          );
-        }
-
         return (
           <button
             key={message.id}
@@ -113,7 +103,7 @@ export function MediaGrid({
               event.stopPropagation();
               onOpen(messages, index);
             }}
-            aria-label="Play video"
+            aria-label={isVideo(message) ? 'Play video' : 'Preview photo'}
           >
             {content}
           </button>
@@ -295,12 +285,13 @@ export function MediaLightbox({
   if (!current?.attachmentId) return null;
   const url = mediaUrl(current.attachmentId);
   const name = current.attachmentName || (isVideo(current) ? 'video' : 'photo');
+  const compact = !isVideo(current);
 
   return (
     <div
-      className="media-lightbox"
+      className={`media-lightbox${compact ? ' is-compact' : ''}`}
       role="dialog"
-      aria-label="Media viewer"
+      aria-label={compact ? 'Photo preview' : 'Media viewer'}
       onClick={onClose}
       onTouchStart={(event) => {
         startXRef.current = event.touches[0].clientX;

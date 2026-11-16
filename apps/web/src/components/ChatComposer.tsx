@@ -18,12 +18,11 @@ import {
 } from 'lucide-react';
 import type { Message } from '@/lib/types';
 import { Modal } from '@/components/ui';
+import { EmojiPicker } from '@/components/EmojiPicker';
 import {
   endMediaInteraction,
   holdMediaInteraction
 } from '@/lib/mediaGuard';
-
-const EMOJIS = ['😊', '😂', '❤️', '👍', '🙏', '🔥', '🎉', '😍', '😢', '🤔', '👏', '💜'];
 
 function formatClock(total: number) {
   const minutes = Math.floor(total / 60);
@@ -66,6 +65,12 @@ type ChatComposerProps = {
   onCancelReply?: () => void;
   editing?: Message | null;
   onCancelEdit?: () => void;
+  /** Study mode: same composer design without media attachments. */
+  allowAttachments?: boolean;
+  /** Study mode keeps the send button visible instead of the mic. */
+  allowVoice?: boolean;
+  placeholder?: string;
+  maxLength?: number;
 };
 
 /**
@@ -93,7 +98,11 @@ export function ChatComposer({
   replyAuthor,
   onCancelReply,
   editing,
-  onCancelEdit
+  onCancelEdit,
+  allowAttachments = true,
+  allowVoice = true,
+  placeholder = 'Message…',
+  maxLength = 5000
 }: ChatComposerProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState({ left: 8, top: 8, width: 280, above: true });
@@ -434,7 +443,7 @@ export function ChatComposer({
   const hasPending = pending.length > 0;
   const voiceMode = recording || Boolean(audioBlob);
 
-  const menu = menuOpen
+  const menu = menuOpen && allowAttachments
     ? createPortal(
         <>
           <div className="composer-menu-backdrop" onClick={() => setMenuOpen(false)} />
@@ -661,27 +670,29 @@ export function ChatComposer({
       )}
 
       <div className="composer-bar">
-        <button
-          ref={menuButtonRef}
-          type="button"
-          className={`composer-icon composer-menu-btn ${menuOpen ? 'is-active' : ''}`}
-          aria-label="Open attachments"
-          aria-expanded={menuOpen}
-          onClick={() => {
-            setMenuOpen((open) => !open);
-            setEmojiOpen(false);
-          }}
-        >
-          {menuOpen ? <X size={20} /> : <Grid2X2 size={20} />}
-        </button>
+        {allowAttachments && (
+          <button
+            ref={menuButtonRef}
+            type="button"
+            className={`composer-icon composer-menu-btn ${menuOpen ? 'is-active' : ''}`}
+            aria-label="Open attachments"
+            aria-expanded={menuOpen}
+            onClick={() => {
+              setMenuOpen((open) => !open);
+              setEmojiOpen(false);
+            }}
+          >
+            {menuOpen ? <X size={20} /> : <Grid2X2 size={20} />}
+          </button>
+        )}
 
         <div className="composer-field">
           <textarea
             ref={textRef}
             rows={1}
             value={value}
-            maxLength={5000}
-            placeholder={editing ? 'Edit message…' : 'Message…'}
+            maxLength={maxLength}
+            placeholder={editing ? 'Edit message…' : placeholder}
             onChange={(event) => {
               onChange(event.target.value);
               onTyping(event.target.value.length > 0);
@@ -717,21 +728,12 @@ export function ChatComposer({
               <Smile size={20} />
             </button>
             {emojiOpen && (
-              <div className="composer-emojis" role="menu">
-                {EMOJIS.map((emoji) => (
-                  <button
-                    key={emoji}
-                    type="button"
-                    onClick={() => {
-                      onChange(value + emoji);
-                      setEmojiOpen(false);
-                      textRef.current?.focus();
-                    }}
-                  >
-                    {emoji}
-                  </button>
-                ))}
-              </div>
+              <EmojiPicker
+                onPick={(emoji) => {
+                  onChange(value + emoji);
+                  textRef.current?.focus();
+                }}
+              />
             )}
           </div>
         </div>
@@ -746,7 +748,7 @@ export function ChatComposer({
           >
             <Send size={18} />
           </button>
-        ) : (
+        ) : allowVoice ? (
           <button
             type="button"
             className="composer-send composer-mic"
@@ -754,6 +756,16 @@ export function ChatComposer({
             aria-label="Record voice message"
           >
             <Mic size={19} />
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="composer-send"
+            onClick={onSend}
+            disabled
+            aria-label="Send message"
+          >
+            <Send size={18} />
           </button>
         )}
       </div>

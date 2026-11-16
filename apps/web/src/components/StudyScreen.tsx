@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Send, Sparkles, X } from 'lucide-react';
+import { Sparkles, X } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
 import {
   studyAutoOpener,
@@ -13,8 +13,9 @@ import {
 import { api } from '@/lib/api';
 import type { StudySeedMessage, StudySeedReply } from '@/lib/types';
 import { formatTime } from '@/lib/utils';
-import { Badge, Button } from '@/components/ui';
+import { Badge } from '@/components/ui';
 import { CallOrb, CallPanel } from '@/components/CallControls';
+import { ChatComposer } from '@/components/ChatComposer';
 
 type StudyMessage = {
   id: string;
@@ -249,25 +250,19 @@ export function StudyScreen() {
 
         <CallPanel />
 
-        <div className="chat-composer">
-          <textarea
-            className="field min-h-[48px] resize-none"
-            rows={1}
-            value={draft}
-            maxLength={2000}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                ask(draft);
-              }
-            }}
-            placeholder="Ask about focus, revision, notes, exams…"
-          />
-          <Button variant="primary" onClick={() => ask(draft)} aria-label="Send">
-            <Send size={17} />
-          </Button>
-        </div>
+        <ChatComposer
+          value={draft}
+          onChange={setDraft}
+          onSend={() => ask(draft)}
+          onTyping={() => undefined}
+          onMediaSelect={() => undefined}
+          onQuickSend={() => undefined}
+          onVoiceSend={() => undefined}
+          allowAttachments={false}
+          allowVoice={false}
+          placeholder="Ask about focus, revision, notes, exams…"
+          maxLength={2000}
+        />
       </div>
     </div>
   );
