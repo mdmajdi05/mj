@@ -52,7 +52,12 @@ export async function sendGenericPush(userId: string, eventType?: string) {
     isGlobalNotificationsEnabled(),
     prisma.userPreference.findUnique({
       where: { userId },
-      select: { chatNotifications: true }
+      select: {
+        chatNotifications: true,
+        adminPushNotifications: true,
+        adminButterflyNotifications: true,
+        adminSoundNotifications: true
+      }
     }),
     prisma.notificationPreference.findUnique({ where: { userId } })
   ]);
@@ -62,6 +67,7 @@ export async function sendGenericPush(userId: string, eventType?: string) {
   // Host grant must allow notifications; butterfly, sound and Chrome push each
   // have their own user-controlled switch.
   if (access?.chatNotifications === false) return;
+  if (access?.adminPushNotifications === false) return;
   if (!preference?.browser) return;
 
   const subscriptions = await prisma.pushSubscription.findMany({ where: { userId } });

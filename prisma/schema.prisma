@@ -192,6 +192,11 @@ model UserPreference {
   activePeerId   String?
   defaultPeerMicOn Boolean @default(true)
   chatNotifications Boolean @default(true)
+  /// Admin-controlled per-type grants for this account (true = allowed).
+  /// The Host can disable push, butterfly or sound notifications individually.
+  adminPushNotifications Boolean @default(true)
+  adminButterflyNotifications Boolean @default(true)
+  adminSoundNotifications Boolean @default(true)
 }
 model AccessCode {
   id        String   @id @default(cuid())

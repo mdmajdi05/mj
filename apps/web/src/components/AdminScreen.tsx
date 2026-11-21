@@ -29,7 +29,7 @@ import { api } from '@/lib/api';
 import { useDuo } from '@/hooks/useDuoApp';
 import type { AdminActivity, CallRecord, GameMessage, Message, Permission } from '@/lib/types';
 import { formatDateTime, eventLabel } from '@/lib/utils';
-import { Badge, Button, EmptyState, Field, Modal, Panel, SectionTitle } from '@/components/ui';
+import { Badge, Button, EmptyState, Field, Modal, Panel, SectionTitle, Toggle } from '@/components/ui';
 
 type AdminMessage = Message & { conversation?: { status: string } };
 type AdminDeletedMessage = Message & {
@@ -43,6 +43,9 @@ type AdminUser = {
   role: 'HOST' | 'GUEST';
   lastSeenAt?: string | null;
   chatNotifications: boolean;
+  adminPushNotifications: boolean;
+  adminButterflyNotifications: boolean;
+  adminSoundNotifications: boolean;
 };
 type NotificationFeatureState = {
   enabled: boolean;
@@ -204,6 +207,27 @@ export function AdminScreen() {
             ? { ...entry, chatNotifications: !entry.chatNotifications }
             : entry
         )
+      );
+    } catch (cause) {
+      duo.setError(cause instanceof Error ? cause.message : 'Feature could not be updated');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function toggleAdminNotificationType(
+    user: AdminUser,
+    type: 'adminPushNotifications' | 'adminButterflyNotifications' | 'adminSoundNotifications',
+    next: boolean
+  ) {
+    setBusy(`feature-${user.id}`);
+    try {
+      await api('/chat/admin/features', {
+        method: 'POST',
+        body: JSON.stringify({ userId: user.id, [type]: next })
+      });
+      setAdminUsers((current) =>
+        current.map((entry) => (entry.id === user.id ? { ...entry, [type]: next } : entry))
       );
     } catch (cause) {
       duo.setError(cause instanceof Error ? cause.message : 'Feature could not be updated');
@@ -771,20 +795,46 @@ export function AdminScreen() {
                       </p>
                     </div>
                   </div>
-                  <Button
-                    onClick={() => void toggleChatNotifications(user)}
-                    disabled={busy === `feature-${user.id}`}
-                    variant={user.chatNotifications ? 'primary' : 'ghost'}
-                  >
-                    {user.chatNotifications ? <Bell size={14} /> : <BellOff size={14} />}
-                    {user.chatNotifications
-                      ? user.id === duo.user?.id
-                        ? 'Disable my notifications'
-                        : 'Disable notifications'
-                      : user.id === duo.user?.id
-                        ? 'Enable my notifications'
-                        : 'Enable notifications'}
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Button
+                      onClick={() => void toggleChatNotifications(user)}
+                      disabled={busy === `feature-${user.id}`}
+                      variant={user.chatNotifications ? 'primary' : 'ghost'}
+                    >
+                      {user.chatNotifications ? <Bell size={14} /> : <BellOff size={14} />}
+                      {user.chatNotifications
+                        ? user.id === duo.user?.id
+                          ? 'Disable my notifications'
+                          : 'Disable notifications'
+                        : user.id === duo.user?.id
+                          ? 'Enable my notifications'
+                          : 'Enable notifications'}
+                    </Button>
+                    <Toggle
+                      label="Admin: Chrome push"
+                      description="Disable to stop Chrome push notifications for this account."
+                      checked={user.adminPushNotifications}
+                      onChange={() =>
+                        void toggleAdminNotificationType(user, 'adminPushNotifications', !user.adminPushNotifications)
+                      }
+                    />
+                    <Toggle
+                      label="Admin: Butterfly"
+                      description="Disable to stop the butterfly notification for this account."
+                      checked={user.adminButterflyNotifications}
+                      onChange={() =>
+                        void toggleAdminNotificationType(user, 'adminButterflyNotifications', !user.adminButterflyNotifications)
+                      }
+                    />
+                    <Toggle
+                      label="Admin: Sound"
+                      description="Disable to stop the notification sound for this account."
+                      checked={user.adminSoundNotifications}
+                      onChange={() =>
+                        void toggleAdminNotificationType(user, 'adminSoundNotifications', !user.adminSoundNotifications)
+                      }
+                    />
+                  </div>
                 </div>
               ))}
               {!adminUsers.length && <p className="muted text-sm">No accounts found.</p>}

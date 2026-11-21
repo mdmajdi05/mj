@@ -53,7 +53,10 @@ const defaultPreferences: Preferences = {
   defaultPeerMicOn: true,
   chatNotifications: true,
   notificationsAvailable: true,
-  pushConfigured: true
+  pushConfigured: true,
+  adminPushNotifications: true,
+  adminButterflyNotifications: true,
+  adminSoundNotifications: true
 };
 
 export function useDuoApp() {
@@ -306,6 +309,8 @@ export function useDuoApp() {
     const currentPrefs = prefsRef.current;
     if (!currentPrefs.notificationsAvailable) return;
     if (!currentPrefs.chatNotifications) return;
+    // The Host can disable the sound notification for this account.
+    if (!currentPrefs.adminSoundNotifications) return;
     if (!currentPrefs.sound || currentPrefs.reducedMotion) return;
     try {
       const AudioContextClass =
@@ -332,6 +337,8 @@ export function useDuoApp() {
     const currentPrefs = prefsRef.current;
     if (!currentPrefs.notificationsAvailable) return;
     if (!currentPrefs.chatNotifications) return;
+    // The Host can disable the Chrome push notification for this account.
+    if (!currentPrefs.adminPushNotifications) return;
     if (!currentPrefs.browser) return;
     if (typeof window === 'undefined' || !('Notification' in window)) return;
     if (Notification.permission !== 'granted') return;
@@ -365,6 +372,8 @@ export function useDuoApp() {
     const currentPrefs = prefsRef.current;
     if (!currentPrefs.notificationsAvailable) return;
     if (!currentPrefs.chatNotifications) return;
+    // The Host can disable the butterfly notification for this account.
+    if (!currentPrefs.adminButterflyNotifications) return;
     if (!currentPrefs.butterfly || currentPrefs.reducedMotion) return;
     if (butterflyIds.current.has(id)) return;
     butterflyIds.current.add(id);
@@ -661,6 +670,11 @@ export function useDuoApp() {
     }
     if (!prefsRef.current.chatNotifications) {
       showError('Chat notifications are disabled by the Host.');
+      return;
+    }
+    // The Host can disable the Chrome push notification for this account.
+    if (!prefsRef.current.adminPushNotifications) {
+      showError('Chrome push notifications are disabled by the Host for your account.');
       return;
     }
     if (typeof window === 'undefined' || !('Notification' in window)) {
@@ -1540,9 +1554,19 @@ export function useDuoApp() {
       if (payload?.count === 0) setActivityUnread(0);
     });
 
-    socket.on('notification:access', (payload: { chatNotifications?: boolean }) => {
+    socket.on('notification:access', (payload: {
+      chatNotifications?: boolean;
+      adminPushNotifications?: boolean;
+      adminButterflyNotifications?: boolean;
+      adminSoundNotifications?: boolean;
+    }) => {
       const allowed = payload?.chatNotifications !== false;
-      const patch = { chatNotifications: allowed };
+      const patch = {
+        chatNotifications: allowed,
+        adminPushNotifications: payload?.adminPushNotifications ?? allowed,
+        adminButterflyNotifications: payload?.adminButterflyNotifications ?? allowed,
+        adminSoundNotifications: payload?.adminSoundNotifications ?? allowed
+      };
       setPrefs((current) => ({ ...current, ...patch }));
       prefsRef.current = { ...prefsRef.current, ...patch };
       if (!allowed) {
