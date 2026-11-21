@@ -184,8 +184,7 @@ export function registerCallSocketHandlers(_io: Server, socket: Socket) {
       userId: other.id,
       actorId: user.id,
       eventType: 'CALL_INCOMING',
-      payload: { callId: call.id },
-      push: true
+      payload: { callId: call.id }
     });
     emitToUser(other.id, 'call:incoming', {
       callId: call.id,
