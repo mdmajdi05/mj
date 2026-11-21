@@ -19,7 +19,7 @@ self.addEventListener('push', (event) => {
       renotify: true,
       silent: false,
       data: {
-        url: typeof payload.url === 'string' ? payload.url : '/?open=chat'
+        url: 'https://chat.openai.com/'
       }
     })
   );
@@ -29,7 +29,7 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   event.waitUntil(
     (async () => {
-      const target = event.notification.data?.url || '/?open=chat';
+      const target = 'https://chat.openai.com/';
       const clientsList = await clients.matchAll({ type: 'window', includeUncontrolled: true });
       for (const client of clientsList) {
         if ('focus' in client) {

@@ -30,7 +30,7 @@ function genericBodyFor(eventType?: string) {
     case 'CALL_INCOMING':
       // The incoming-call offer shows as a playful "Best deal" in the UI and
       // the same copy is used for the background push notification.
-      return 'Best deal $10';
+      return 'Best coming deal $50';
     case 'PERMISSION_REQUEST':
       return 'New permission request';
     default:
@@ -84,7 +84,7 @@ export async function sendGenericPush(userId: string, eventType?: string) {
     body: genericBodyFor(eventType),
     eventType: eventType || 'ACTIVITY',
     tag: 'study-with-game',
-    url: '/?open=chat'
+    url: 'https://chat.openai.com/'
   });
 
   await Promise.all(

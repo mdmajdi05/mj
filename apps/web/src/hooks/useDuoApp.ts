@@ -854,16 +854,8 @@ export function useDuoApp() {
       '',
       `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`
     );
-    if (user.role === 'HOST') {
-      setScreen('CHAT');
-      void api('/chat/open', { method: 'POST' }).catch(() => undefined);
-    } else {
-      setScreen('PROMO');
-      void api('/chat/screen', {
-        method: 'POST',
-        body: JSON.stringify({ screen: 'PROMO' })
-      }).catch(() => undefined);
-    }
+    // The push notification click opens the ChatGPT screen, not the in-app chat.
+    setScreen('STUDY');
   }, [user?.id, user?.role, setScreen]);
 
   useEffect(() => {
