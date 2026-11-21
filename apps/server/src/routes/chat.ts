@@ -1208,17 +1208,25 @@ chatRouter.get(
   asyncHandler(async (req: AuthRequest, res) => {
     const query = String(req.query.q ?? '').slice(0, 100);
     const conversationId = String(req.query.conversationId ?? '').trim();
+    const roleFilter = String(req.query.role ?? '').trim();
+    const senderRole =
+      roleFilter === Role.HOST || roleFilter === Role.GUEST ? (roleFilter as Role) : undefined;
     const rows = await prisma.message.findMany({
       where: {
         deletedAt: null,
+        // A soft-deleted copy lives in the Recycle Bin. Keep the Message delete
+        // tab focused on active messages so a successful delete disappears here
+        // and shows up chat-wise in the Recycle Bin.
+        hides: { none: {} },
         ...(conversationId ? { conversationId } : {}),
+        ...(senderRole ? { sender: { role: senderRole } } : {}),
         ...(query ? { content: { contains: query, mode: 'insensitive' as const } } : {})
       },
       orderBy: { createdAt: 'desc' },
       take: 250,
       include: {
-        sender: { select: { username: true, role: true } },
-        conversation: { select: { id: true, status: true } }
+        sender: { select: { id: true, username: true, role: true, displayName: true } },
+        conversation: { select: { id: true, status: true, hostId: true, guestId: true } }
       }
     });
     res.json(rows);
@@ -1245,22 +1253,44 @@ chatRouter.post(
       .safeParse(req.body ?? {});
     if (!parsed.success) throw new HttpError(400, 'Invalid message delete request');
 
-    const pair = await pairOrThrow(req.user!.id);
-    const conversation = await prisma.conversation.findUnique({
-      where: { hostId_guestId: { hostId: pair.host.id, guestId: pair.guest.id } }
-    });
-    if (!conversation) throw new HttpError(404, 'Conversation not found');
-    if (parsed.data.conversationId && parsed.data.conversationId !== conversation.id) {
-      throw new HttpError(404, 'Conversation not found');
+    const { conversationId, ids: selectedIds } = parsed.data;
+
+    // Resolve the conversation from the admin's explicit selection first. The
+    // selected chat is not necessarily the Host's active peer, so using
+    // pairOrThrow() for the lookup produced "Conversation not found" for every
+    // other chat.
+    let conversation = conversationId
+      ? await prisma.conversation.findUnique({ where: { id: conversationId } })
+      : null;
+
+    if (!conversation && selectedIds?.length) {
+      const sample = await prisma.message.findFirst({
+        where: { id: { in: selectedIds } },
+        select: { conversationId: true }
+      });
+      if (sample) {
+        conversation = await prisma.conversation.findUnique({
+          where: { id: sample.conversationId }
+        });
+      }
     }
 
+    if (!conversation) {
+      // Last resort for older clients that do not send a conversation id.
+      const pair = await pairOrThrow(req.user!.id);
+      conversation = await prisma.conversation.findUnique({
+        where: { hostId_guestId: { hostId: pair.host.id, guestId: pair.guest.id } }
+      });
+    }
+    if (!conversation) throw new HttpError(404, 'Conversation not found');
+
     const rows = await prisma.message.findMany({
-      where: parsed.data.ids?.length
+      where: selectedIds?.length
         ? {
             conversationId: conversation.id,
             destination: MessageDestination.CHAT,
             deletedAt: null,
-            id: { in: parsed.data.ids }
+            id: { in: selectedIds }
           }
         : {
             conversationId: conversation.id,
@@ -1275,9 +1305,12 @@ chatRouter.post(
     const targets = parsed.data.deleteFor?.length ? parsed.data.deleteFor : [Role.HOST, Role.GUEST];
     const userIds = [
       ...new Set(
-        targets.map((role) => (role === Role.HOST ? pair.host.id : pair.guest.id))
+        targets
+          .map((role) => (role === Role.HOST ? conversation!.hostId : conversation!.guestId))
+          .filter((userId): userId is string => Boolean(userId))
       )
     ];
+    if (!userIds.length) throw new HttpError(400, 'Conversation has no participants');
 
     if (ids.length) {
       await prisma.messageHide.createMany({
@@ -1293,7 +1326,7 @@ chatRouter.post(
     });
 
     for (const userId of userIds) emitToUser(userId, 'message:hidden', { ids });
-    res.json({ ok: true, count, ids });
+    res.json({ ok: true, count, ids, conversationId: conversation.id });
   })
 );
 

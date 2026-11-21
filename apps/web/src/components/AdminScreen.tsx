@@ -172,6 +172,12 @@ export function AdminScreen() {
     };
   }, [activity, duo.permissions, gameMessages.length, messages.length]);
 
+  /** Host only / Guest only filters the chat view to that member's messages. */
+  const visibleMessages = useMemo(() => {
+    if (deleteFor === 'BOTH') return messages;
+    return messages.filter((message) => message.sender?.role === deleteFor);
+  }, [messages, deleteFor]);
+
   function deleteForPayload(): Array<'HOST' | 'GUEST'> {
     return deleteFor === 'BOTH' ? ['HOST', 'GUEST'] : [deleteFor];
   }
@@ -225,7 +231,11 @@ export function AdminScreen() {
         '/chat/admin/messages/delete',
         {
           method: 'POST',
-          body: JSON.stringify({ ids: [id], deleteFor: deleteForPayload() })
+          body: JSON.stringify({
+            conversationId: activeConversationId || undefined,
+            ids: [id],
+            deleteFor: deleteForPayload()
+          })
         }
       );
       await refresh(search, activeConversationId || undefined);
@@ -701,6 +711,8 @@ export function AdminScreen() {
                 value={activeConversationId}
                 onChange={(event) => {
                   setActiveConversationId(event.target.value);
+                  setSelectedAdminIds(new Set());
+                  setAdminSelectMode(false);
                   void refresh(search, event.target.value || undefined);
                 }}
               >
@@ -739,20 +751,28 @@ export function AdminScreen() {
                 <Trash2 size={15} /> Delete selected ({selectedAdminIds.size})
               </Button>
             )}
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="muted text-xs font-medium">Show / delete:</span>
               {(['BOTH', 'HOST', 'GUEST'] as const).map((value) => (
                 <Button
                   key={value}
                   className="!px-3 !py-1.5 text-xs"
                   variant={deleteFor === value ? 'primary' : 'ghost'}
-                  onClick={() => setDeleteFor(value)}
+                  onClick={() => {
+                    setDeleteFor(value);
+                    setSelectedAdminIds(new Set());
+                  }}
                 >
                   {value === 'BOTH' ? 'Both members' : value === 'HOST' ? 'Host only' : 'Guest only'}
                 </Button>
               ))}
             </div>
             <span className="muted text-xs">
-              Delete scope: <span className="font-medium">{deleteForLabel}</span>
+              {deleteFor === 'BOTH'
+                ? 'Showing every message · deletes both copies'
+                : `Showing ${deleteFor === 'HOST' ? 'Host' : 'Guest'} messages · deletes the ${
+                    deleteFor === 'HOST' ? 'Host' : 'Guest'
+                  } copy`}
             </span>
           </div>
 
@@ -771,33 +791,67 @@ export function AdminScreen() {
             </Button>
           </div>
 
-          <div className="mt-4 space-y-2">
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className="flex items-start justify-between gap-3 rounded-xl border border-white/5 bg-black/15 p-3"
-              >
-                <div className="flex min-w-0 flex-1 items-start gap-3">
+          <div className="mt-4 flex max-h-[62vh] flex-col gap-3 overflow-y-auto rounded-2xl border border-white/5 bg-black/20 p-3 sm:p-4">
+            {visibleMessages.map((message) => {
+              const isHost = message.sender?.role === 'HOST';
+              const senderName =
+                message.sender?.displayName || message.sender?.username || message.senderId;
+              const selected = selectedAdminIds.has(message.id);
+              return (
+                <div
+                  key={message.id}
+                  className={`flex items-end gap-2 ${isHost ? 'justify-end' : 'justify-start'}`}
+                >
+                  {!isHost && (
+                    <span className="mb-1 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/10 text-[10px] font-semibold uppercase text-white/70">
+                      {senderName.slice(0, 2)}
+                    </span>
+                  )}
                   {adminSelectMode && (
                     <input
                       type="checkbox"
-                      checked={selectedAdminIds.has(message.id)}
+                      checked={selected}
                       onChange={() => toggleAdminSelected(message.id)}
-                      className="mt-1 h-4 w-4 accent-rose-400"
-                      aria-label={`Select message from ${message.sender?.username || 'participant'}`}
+                      className="mb-6 h-4 w-4 shrink-0 accent-rose-400"
+                      aria-label={`Select message from ${senderName}`}
                     />
                   )}
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge tone="accent">{message.sender?.username || message.senderId}</Badge>
-                      <span className="muted text-[11px]">{formatDateTime(message.createdAt)}</span>
-                      {message.conversation?.status && (
-                        <Badge tone={message.conversation.status === 'ACTIVE' ? 'good' : 'warn'}>
-                          {message.conversation.status}
-                        </Badge>
-                      )}
+                  <div
+                    onClick={adminSelectMode ? () => toggleAdminSelected(message.id) : undefined}
+                    role={adminSelectMode ? 'button' : undefined}
+                    aria-pressed={adminSelectMode ? selected : undefined}
+                    className={[
+                      'relative max-w-[82%] rounded-2xl border px-3.5 py-2.5 shadow-lg sm:max-w-[72%]',
+                      isHost
+                        ? 'rounded-br-md border-fuchsia-300/20 bg-gradient-to-br from-fuchsia-700/90 to-purple-800/90 text-white'
+                        : 'rounded-bl-md border-white/10 bg-[#241f31] text-white/90',
+                      adminSelectMode ? 'cursor-pointer' : '',
+                      selected ? 'ring-2 ring-fuchsia-400 ring-offset-2 ring-offset-black/40' : ''
+                    ].join(' ')}
+                  >
+                    {selected && (
+                      <span className="selection-check">
+                        <Check size={11} />
+                      </span>
+                    )}
+                    <div
+                      className={`flex flex-wrap items-center gap-2 text-[11px] ${
+                        isHost ? 'justify-end' : ''
+                      }`}
+                    >
+                      <span className="font-semibold text-white/90">{senderName}</span>
+                      <span
+                        className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
+                          isHost
+                            ? 'bg-white/15 text-white/80'
+                            : 'bg-emerald-400/15 text-emerald-200'
+                        }`}
+                      >
+                        {isHost ? 'Host' : 'Guest'}
+                      </span>
+                      <span className="text-white/50">{formatDateTime(message.createdAt)}</span>
                     </div>
-                    <p className="mt-1 break-words text-sm leading-6">
+                    <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6">
                       {message.content ||
                         (message.attachmentKind === 'IMAGE'
                           ? '📷 Photo'
@@ -809,24 +863,53 @@ export function AdminScreen() {
                                 ? `📎 ${message.attachmentName}`
                                 : 'Attachment')}
                     </p>
+                    <div
+                      className={`mt-1.5 flex flex-wrap items-center gap-2 text-[10px] text-white/55 ${
+                        isHost ? 'justify-end' : ''
+                      }`}
+                    >
+                      {message.conversation?.status && (
+                        <span
+                          className={
+                            message.conversation.status === 'ACTIVE'
+                              ? 'text-emerald-300/80'
+                              : 'text-amber-300/80'
+                          }
+                        >
+                          {message.conversation.status}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 rounded-full bg-black/25 px-2 py-0.5 text-rose-200 transition hover:bg-rose-500/25 hover:text-rose-100"
+                        aria-label="Delete message"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setDeleteConfirmIds([message.id]);
+                        }}
+                        disabled={busy === message.id}
+                      >
+                        <Trash2 size={11} /> Delete
+                      </button>
+                    </div>
                   </div>
+                  {isHost && (
+                    <span className="mb-1 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-fuchsia-500/25 text-[10px] font-semibold uppercase text-fuchsia-100">
+                      {senderName.slice(0, 2)}
+                    </span>
+                  )}
                 </div>
-                <Button
-                  variant="danger"
-                  className="shrink-0"
-                  aria-label="Delete message"
-                  onClick={() => setDeleteConfirmIds([message.id])}
-                  disabled={busy === message.id}
-                >
-                  <Trash2 size={14} />
-                </Button>
-              </div>
-            ))}
-            {!messages.length && (
+              );
+            })}
+            {!visibleMessages.length && (
               <EmptyState
                 icon={<MessageCircle size={24} />}
                 title="No messages found"
-                description="Try a different search or start a conversation."
+                description={
+                  deleteFor === 'BOTH'
+                    ? 'Try a different search or start a conversation.'
+                    : `No ${deleteFor === 'HOST' ? 'Host' : 'Guest'} messages in this chat.`
+                }
               />
             )}
           </div>
@@ -1395,8 +1478,9 @@ export function AdminScreen() {
         onClose={() => setDeleteConfirmIds(null)}
       >
         <p className="muted text-sm leading-6">
-          This is a soft delete from the admin side. The selected copy will be kept in the Recycle
-          Bin and can be restored or permanently deleted from there.
+          This is a soft delete from the admin side for <strong>{deleteForLabel}</strong>. The
+          selected copy will be kept in the Recycle Bin and can be restored or permanently deleted
+          from there.
         </p>
         <div className="mt-5 flex justify-end gap-2">
           <Button onClick={() => setDeleteConfirmIds(null)}>Cancel</Button>
