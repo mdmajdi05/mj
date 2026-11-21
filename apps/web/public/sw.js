@@ -11,13 +11,6 @@ self.addEventListener('push', (event) => {
 
   const title = typeof payload.title === 'string' ? payload.title : 'Study with Game';
   const body = typeof payload.body === 'string' ? payload.body : 'You have a new message';
-  const eventType = typeof payload.eventType === 'string' ? payload.eventType : '';
-
-  // Incoming calls never render a Chrome notification; ringing stays in-app.
-  if (eventType === 'CALL_INCOMING') {
-    event.waitUntil(Promise.resolve());
-    return;
-  }
 
   event.waitUntil(
     self.registration.showNotification(title, {
