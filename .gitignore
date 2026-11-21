@@ -14,3 +14,4 @@ certbot/conf/
 certbot/www/
 certbot/work/
 certbot/logs/
+*.tsbuildinfo

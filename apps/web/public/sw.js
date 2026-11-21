@@ -1,13 +1,26 @@
 /* Background push for private chat. Deliberately generic: no message text,
  * sender name or attachment name is ever shown in the notification. */
+
 self.addEventListener('push', (event) => {
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch {
+    payload = {};
+  }
+
+  const title = typeof payload.title === 'string' ? payload.title : 'Study with Game';
+  const body = typeof payload.body === 'string' ? payload.body : 'You have a new message';
+
   event.waitUntil(
-    self.registration.showNotification('Study with Game', {
-      body: '',
-      tag: 'study-with-game',
+    self.registration.showNotification(title, {
+      body,
+      tag: typeof payload.tag === 'string' ? payload.tag : 'study-with-game',
       renotify: true,
       silent: false,
-      data: { url: '/?open=chat' }
+      data: {
+        url: typeof payload.url === 'string' ? payload.url : '/?open=chat'
+      }
     })
   );
 });
@@ -35,7 +48,11 @@ self.addEventListener('pushsubscriptionchange', (event) => {
   event.waitUntil(
     (async () => {
       try {
-        const response = await fetch('/api/chat/push/public-key', {
+        // In production the API is same-origin. In local development the web
+        // app and API run on different ports, so the registration carries the
+        // API base in its query string.
+        const apiBase = new URL(self.location.href).searchParams.get('api') || '';
+        const response = await fetch(`${apiBase}/api/chat/push/public-key`, {
           credentials: 'include'
         });
         const key = (await response.json())?.publicKey;
@@ -49,7 +66,7 @@ self.addEventListener('pushsubscriptionchange', (event) => {
           userVisibleOnly: true,
           applicationServerKey
         });
-        await fetch('/api/chat/push/subscribe', {
+        await fetch(`${apiBase}/api/chat/push/subscribe`, {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },

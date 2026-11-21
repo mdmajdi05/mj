@@ -37,7 +37,7 @@ import type {
   Permission
 } from '@/lib/types';
 import { formatDateTime, eventLabel } from '@/lib/utils';
-import { Badge, Button, EmptyState, Field, Modal, Panel, SectionTitle } from '@/components/ui';
+import { Badge, Button, EmptyState, Field, Modal, Panel, SectionTitle, Toggle } from '@/components/ui';
 
 type AdminMessage = Message & { conversation?: { id?: string; status: string } };
 type AdminDeletedMessage = Message & {
@@ -56,6 +56,14 @@ type AdminUser = {
   role: 'HOST' | 'GUEST';
   lastSeenAt?: string | null;
   chatNotifications: boolean;
+  adminPushNotifications: boolean;
+  adminButterflyNotifications: boolean;
+  adminSoundNotifications: boolean;
+};
+type NotificationFeatureState = {
+  enabled: boolean;
+  pushConfigured: boolean;
+  updatedAt?: string | null;
 };
 type Tab =
   | 'overview'
@@ -87,6 +95,8 @@ export function AdminScreen() {
   const [messages, setMessages] = useState<AdminMessage[]>([]);
   const [deletedMessages, setDeletedMessages] = useState<AdminDeletedMessage[]>([]);
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
+  const [notificationSettings, setNotificationSettings] =
+    useState<NotificationFeatureState | null>(null);
   const [deletedRole, setDeletedRole] = useState<'' | 'HOST' | 'GUEST'>('');
   const [gameMessages, setGameMessages] = useState<GameMessage[]>([]);
   const [search, setSearch] = useState('');
@@ -120,7 +130,8 @@ export function AdminScreen() {
       usersResult,
       gameResult,
       promoResult,
-      conversationsResult
+      conversationsResult,
+      notificationResult
     ] = await Promise.allSettled([
       api<AdminActivity>('/chat/admin/activity'),
       api<AdminMessage[]>(`/chat/admin/messages${queryString ? `?${queryString}` : ''}`),
@@ -128,7 +139,8 @@ export function AdminScreen() {
       api<AdminUser[]>('/chat/admin/users'),
       api<GameMessage[]>('/chat/admin/game-messages'),
       api<any>('/chat/admin/promo/status'),
-      api<AdminConversation[]>('/chat/admin/conversations')
+      api<AdminConversation[]>('/chat/admin/conversations'),
+      api<NotificationFeatureState>('/chat/admin/notification-settings')
     ]);
     if (activityResult.status === 'fulfilled') setActivity(activityResult.value);
     if (messagesResult.status === 'fulfilled') setMessages(messagesResult.value);
@@ -141,6 +153,7 @@ export function AdminScreen() {
       setConversations(next);
       setActiveConversationId((current) => current || next[0]?.id || '');
     }
+    if (notificationResult.status === 'fulfilled') setNotificationSettings(notificationResult.value);
     setLoading(false);
   }, []);
 
@@ -318,6 +331,56 @@ export function AdminScreen() {
       );
     } catch (cause) {
       duo.setError(cause instanceof Error ? cause.message : 'Feature could not be updated');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function toggleAdminNotificationType(
+    user: AdminUser,
+    type: 'adminPushNotifications' | 'adminButterflyNotifications' | 'adminSoundNotifications',
+    next: boolean
+  ) {
+    setBusy(`feature-${user.id}`);
+    try {
+      await api('/chat/admin/features', {
+        method: 'POST',
+        body: JSON.stringify({ userId: user.id, [type]: next })
+      });
+      setAdminUsers((current) =>
+        current.map((entry) => (entry.id === user.id ? { ...entry, [type]: next } : entry))
+      );
+    } catch (cause) {
+      duo.setError(cause instanceof Error ? cause.message : 'Feature could not be updated');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function toggleGlobalNotifications() {
+    const next = !(notificationSettings?.enabled ?? true);
+    if (
+      !next &&
+      !window.confirm(
+        'Disable notifications for every account? No message or update will notify anyone, and the notification options will be hidden from every Settings screen.'
+      )
+    ) {
+      return;
+    }
+    setBusy('notification-setting');
+    try {
+      const state = await api<NotificationFeatureState>('/chat/admin/notification-settings', {
+        method: 'POST',
+        body: JSON.stringify({ enabled: next })
+      });
+      setNotificationSettings(state);
+      duo.setNotice(
+        state.enabled
+          ? 'Notifications are enabled for every account.'
+          : 'Notifications are disabled for every account.'
+      );
+    } catch (cause) {
+      duo.setError(cause instanceof Error ? cause.message : 'Notification setting could not be saved');
     } finally {
       setBusy('');
     }
@@ -904,48 +967,138 @@ export function AdminScreen() {
       )}
 
       {tab === 'features' && (
-        <Panel className="p-5">
-          <div>
-            <p className="eyebrow">Per-user features</p>
-            <h3 className="mt-1 text-lg font-semibold">Chat notifications</h3>
-            <p className="muted mt-1 text-sm leading-6">
-              Choose which accounts receive chat notifications. When enabled, the browser shows
-              only a notification icon — never the message text. When disabled, no chat
-              notification or butterfly is sent to that account.
-            </p>
-          </div>
-          <div className="mt-4 space-y-2">
-            {adminUsers.map((user) => (
-              <div
-                key={user.id}
-                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/5 bg-black/15 p-3"
+        <div className="grid gap-4">
+          <Panel className="p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="eyebrow">Notification availability</p>
+                <h3 className="mt-1 text-lg font-semibold">Show notifications to everyone</h3>
+                <p className="muted mt-1 max-w-2xl text-sm leading-6">
+                  This is the master switch. When it is on, each account can enable Chrome
+                  notifications in Settings. When it is off, no message or update sends a
+                  notification to anyone, and the notification options are hidden from every
+                  Settings screen.
+                </p>
+              </div>
+              <Badge tone={notificationSettings?.enabled ?? true ? 'good' : 'bad'}>
+                {notificationSettings?.enabled ?? true ? 'Enabled for everyone' : 'Disabled for everyone'}
+              </Badge>
+            </div>
+
+            {notificationSettings && !notificationSettings.pushConfigured && (
+              <p className="mt-3 rounded-xl border border-amber-400/20 bg-amber-400/10 p-3 text-xs leading-5 text-amber-200">
+                Background push is not configured on the server (VAPID keys are missing). In-page
+                notifications work while a tab is open, but Chrome cannot notify when it is closed.
+              </p>
+            )}
+
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <Button
+                variant={notificationSettings?.enabled ?? true ? 'danger' : 'primary'}
+                onClick={() => void toggleGlobalNotifications()}
+                disabled={busy === 'notification-setting'}
               >
-                <div className="flex items-center gap-3">
-                  <span className="chat-avatar chat-avatar-sm">
-                    {(user.displayName || user.username).charAt(0).toUpperCase()}
-                  </span>
-                  <div>
-                    <p className="text-sm font-medium">{user.displayName || user.username}</p>
-                    <p className="muted text-[11px]">
-                      {user.role} · {user.chatNotifications ? 'Notifications on' : 'Notifications off'}
-                    </p>
+                {notificationSettings?.enabled ?? true ? (
+                  <>
+                    <BellOff size={15} /> Disable notifications for everyone
+                  </>
+                ) : (
+                  <>
+                    <Bell size={15} /> Enable notifications for everyone
+                  </>
+                )}
+              </Button>
+              {notificationSettings?.updatedAt && (
+                <span className="muted text-xs">
+                  Last changed {formatDateTime(notificationSettings.updatedAt)}
+                </span>
+              )}
+            </div>
+          </Panel>
+
+          <Panel className="p-5">
+            <div>
+              <p className="eyebrow">Per-user features</p>
+              <h3 className="mt-1 text-lg font-semibold">Chat notifications</h3>
+              <p className="muted mt-1 text-sm leading-6">
+                Choose which accounts may receive notifications. This list includes the Host, so you
+                can switch your own notifications on or off here too. When an account is allowed, it
+                can still turn its own notifications off in Settings. When you disable an account,
+                no message notification or butterfly is sent to it and its Settings options are
+                hidden. This works only when the master switch above is on.
+              </p>
+            </div>
+            <div className="mt-4 space-y-2">
+              {[...adminUsers]
+                .sort((a, b) =>
+                  a.role === b.role ? 0 : a.role === 'HOST' ? -1 : 1
+                )
+                .map((user) => (
+                <div
+                  key={user.id}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/5 bg-black/15 p-3"
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="chat-avatar chat-avatar-sm">
+                      {(user.displayName || user.username).charAt(0).toUpperCase()}
+                    </span>
+                    <div>
+                      <p className="text-sm font-medium">
+                        {user.displayName || user.username}
+                        {user.id === duo.user?.id ? ' (you)' : ''}
+                      </p>
+                      <p className="muted text-[11px]">
+                        {user.role === 'HOST' ? 'Host / Admin' : 'Guest'} ·{' '}
+                        {user.chatNotifications ? 'Admin: allowed' : 'Admin: disabled'}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Button
+                      onClick={() => void toggleChatNotifications(user)}
+                      disabled={busy === `feature-${user.id}`}
+                      variant={user.chatNotifications ? 'primary' : 'ghost'}
+                    >
+                      {user.chatNotifications ? <Bell size={14} /> : <BellOff size={14} />}
+                      {user.chatNotifications
+                        ? user.id === duo.user?.id
+                          ? 'Disable my notifications'
+                          : 'Disable notifications'
+                        : user.id === duo.user?.id
+                          ? 'Enable my notifications'
+                          : 'Enable notifications'}
+                    </Button>
+                    <Toggle
+                      label="Admin: Chrome push"
+                      description="Disable to stop Chrome push notifications for this account."
+                      checked={user.adminPushNotifications}
+                      onChange={() =>
+                        void toggleAdminNotificationType(user, 'adminPushNotifications', !user.adminPushNotifications)
+                      }
+                    />
+                    <Toggle
+                      label="Admin: Butterfly"
+                      description="Disable to stop the butterfly notification for this account."
+                      checked={user.adminButterflyNotifications}
+                      onChange={() =>
+                        void toggleAdminNotificationType(user, 'adminButterflyNotifications', !user.adminButterflyNotifications)
+                      }
+                    />
+                    <Toggle
+                      label="Admin: Sound"
+                      description="Disable to stop the notification sound for this account."
+                      checked={user.adminSoundNotifications}
+                      onChange={() =>
+                        void toggleAdminNotificationType(user, 'adminSoundNotifications', !user.adminSoundNotifications)
+                      }
+                    />
                   </div>
                 </div>
-                <Button
-                  onClick={() => void toggleChatNotifications(user)}
-                  disabled={busy === `feature-${user.id}`}
-                  variant={user.chatNotifications ? 'primary' : 'ghost'}
-                >
-                  {user.chatNotifications ? <Bell size={14} /> : <BellOff size={14} />}
-                  {user.chatNotifications ? 'Disable notifications' : 'Enable notifications'}
-                </Button>
-              </div>
-            ))}
-            {!adminUsers.length && (
-              <p className="muted text-sm">No accounts found.</p>
-            )}
-          </div>
-        </Panel>
+              ))}
+              {!adminUsers.length && <p className="muted text-sm">No accounts found.</p>}
+            </div>
+          </Panel>
+        </div>
       )}
 
       {tab === 'study' && <StudyAdminPanel />}

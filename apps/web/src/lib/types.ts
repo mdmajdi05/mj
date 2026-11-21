@@ -97,6 +97,14 @@ export type Preferences = {
   reducedMotion: boolean;
   defaultPeerMicOn: boolean;
   chatNotifications: boolean;
+  /** Host-controlled global availability of the whole notification feature. */
+  notificationsAvailable: boolean;
+  /** True when the server has VAPID keys so background Web Push can work. */
+  pushConfigured: boolean;
+  /** Admin-controlled per-type grants for this account (Host decisions). */
+  adminPushNotifications: boolean;
+  adminButterflyNotifications: boolean;
+  adminSoundNotifications: boolean;
 };
 
 export type StudySeedMessage = {

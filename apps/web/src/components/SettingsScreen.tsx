@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import {
-  Bell,
   BellOff,
   KeyRound,
   LogOut,
@@ -11,7 +10,7 @@ import {
   Volume2
 } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
-import { Badge, Button, Field, Panel, SectionTitle, Toggle } from '@/components/ui';
+import { Button, Field, Panel, SectionTitle, Toggle } from '@/components/ui';
 
 export function SettingsScreen() {
   const duo = useDuo();
@@ -48,8 +47,25 @@ export function SettingsScreen() {
       <div className="grid gap-4 lg:grid-cols-2">
         <Panel className="p-5">
           <p className="eyebrow">Notifications</p>
-          <h3 className="mt-1 text-lg font-semibold">Butterfly & sound</h3>
-          {!duo.prefs.chatNotifications ? (
+          <h3 className="mt-1 text-lg font-semibold">Butterfly, sound & Chrome push</h3>
+          {!duo.prefs.notificationsAvailable ? (
+            <div className="mt-3 rounded-xl border border-white/10 bg-black/15 p-4">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <BellOff size={16} className="text-amber-300" /> Notifications are disabled
+              </div>
+              <p className="muted mt-2 text-xs leading-5">
+                The Host has turned off notifications for every account. No message or update will
+                send a notification, and these options stay hidden until the Host enables them
+                again.
+              </p>
+              {duo.user?.role === 'HOST' && (
+                <p className="muted mt-2 text-xs leading-5">
+                  Turn them back on from Admin Dashboard → User features → Notification
+                  availability.
+                </p>
+              )}
+            </div>
+          ) : !duo.prefs.chatNotifications ? (
             <div className="mt-3 rounded-xl border border-white/10 bg-black/15 p-4">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <BellOff size={16} className="text-amber-300" /> Notifications are disabled
@@ -61,7 +77,7 @@ export function SettingsScreen() {
             </div>
           ) : (
             <>
-              <div className="mt-2 divide-y divide-white/5">
+              <div className="divide-y divide-white/5">
                 <Toggle
                   label="Butterfly notifications"
                   description="A discreet butterfly flies across the screen. It never shows message text or sender details."
@@ -75,40 +91,28 @@ export function SettingsScreen() {
                   onChange={() => void duo.updatePreference({ sound: !duo.prefs.sound })}
                 />
                 <Toggle
+                  label="Chrome push notifications"
+                  description="Get a Chrome notification for every new message or update, even when this tab is closed. Only generic copy is shown — never the message text or sender."
+                  checked={duo.prefs.browser}
+                  onChange={() =>
+                    void (duo.prefs.browser
+                      ? duo.disableBrowserNotifications()
+                      : duo.enableBrowserNotifications())
+                  }
+                />
+                <Toggle
                   label="Reduced motion"
                   description="Disables butterfly flight and shortens animations. The Study Assistant response appears without the long streaming animation."
                   checked={duo.prefs.reducedMotion}
-                  onChange={() =>
-                    void duo.updatePreference({ reducedMotion: !duo.prefs.reducedMotion })
-                  }
+                  onChange={() => void duo.updatePreference({ reducedMotion: !duo.prefs.reducedMotion })}
                 />
               </div>
-
-              <div className="mt-4 rounded-xl border border-white/10 bg-black/15 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium">Chrome push notifications</p>
-                    <p className="muted mt-1 text-xs leading-5">
-                      Generic copy only. Chrome shows a small notification icon even when this tab
-                      is closed. You can disable it here or in Chrome site settings.
-                    </p>
-                  </div>
-                  <Badge tone={duo.prefs.browser ? 'good' : 'neutral'}>
-                    {duo.prefs.browser ? 'Enabled' : 'Off'}
-                  </Badge>
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {duo.prefs.browser ? (
-                    <Button onClick={() => void duo.disableBrowserNotifications()}>
-                      <BellOff size={15} /> Disable notifications
-                    </Button>
-                  ) : (
-                    <Button variant="primary" onClick={() => void duo.enableBrowserNotifications()}>
-                      <Bell size={15} /> Enable notifications
-                    </Button>
-                  )}
-                </div>
-              </div>
+              {!duo.prefs.pushConfigured && (
+                <p className="mt-3 rounded-lg border border-amber-400/20 bg-amber-400/10 p-2 text-xs leading-5 text-amber-200">
+                  Background push is not configured on the server (VAPID keys are missing). In-page
+                  notifications still work while the tab is open.
+                </p>
+              )}
             </>
           )}
         </Panel>
