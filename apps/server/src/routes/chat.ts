@@ -25,7 +25,8 @@ import {
   getNotificationFeatureState,
   isGlobalNotificationsEnabled,
   isPushConfigured,
-  setGlobalNotificationsEnabled
+  setGlobalNotificationsEnabled,
+  setNotificationCopies
 } from '../services/notificationSettings';
 
 export const chatRouter = Router();
@@ -1575,22 +1576,46 @@ chatRouter.post(
   '/admin/notification-settings',
   requireHost,
   asyncHandler(async (req: AuthRequest, res) => {
-    const parsed = z.object({ enabled: z.boolean() }).safeParse(req.body);
+    const parsed = z
+      .object({
+        enabled: z.boolean().optional(),
+        notificationTexts: z.record(z.string(), z.string()).optional(),
+        callAcceptText: z.string().optional(),
+        callRejectText: z.string().optional()
+      })
+      .safeParse(req.body);
     if (!parsed.success) throw new HttpError(400, 'Invalid notification setting');
 
-    const state = await setGlobalNotificationsEnabled(parsed.data.enabled, req.user!.id);
+    let nextState = await getNotificationFeatureState();
+
+    if (parsed.data.enabled !== undefined) {
+      const updated = await setGlobalNotificationsEnabled(parsed.data.enabled, req.user!.id);
+      nextState = { ...nextState, enabled: updated.enabled, updatedAt: updated.updatedAt };
+    }
+    if (parsed.data.notificationTexts || parsed.data.callAcceptText !== undefined || parsed.data.callRejectText !== undefined) {
+      nextState = await setNotificationCopies({
+        notificationTexts: parsed.data.notificationTexts,
+        callAcceptText: parsed.data.callAcceptText,
+        callRejectText: parsed.data.callRejectText,
+        updatedBy: req.user!.id
+      });
+    }
+
     await audit(req.user!.id, 'UPDATE_NOTIFICATION_SETTING', undefined, {
-      enabled: parsed.data.enabled
+      enabled: nextState.enabled,
+      notificationTexts: nextState.notificationTexts,
+      callAcceptText: nextState.callAcceptText,
+      callRejectText: nextState.callRejectText
     });
 
     // Every connected client updates immediately: when disabled the Settings
     // options disappear and any in-page browser notification is suppressed.
     const recipients = await prisma.user.findMany({ select: { id: true } });
     for (const recipient of recipients) {
-      emitToUser(recipient.id, 'notification:global', { enabled: state.enabled });
+      emitToUser(recipient.id, 'notification:global', { enabled: nextState.enabled });
     }
 
-    res.json(state);
+    res.json(nextState);
   })
 );
 

@@ -64,6 +64,9 @@ type NotificationFeatureState = {
   enabled: boolean;
   pushConfigured: boolean;
   updatedAt?: string | null;
+  notificationTexts?: Record<string, string> | null;
+  callAcceptText?: string | null;
+  callRejectText?: string | null;
 };
 type Tab =
   | 'overview'
@@ -384,6 +387,15 @@ export function AdminScreen() {
     } finally {
       setBusy('');
     }
+  }
+
+  async function saveNotificationTexts(copies: Record<string, string>) {
+    const state = await api<NotificationFeatureState>('/chat/admin/notification-settings', {
+      method: 'POST',
+      body: JSON.stringify({ notificationTexts: copies })
+    });
+    setNotificationSettings(state);
+    duo.setNotice('Notification copy updated.');
   }
 
   const visibleDeleted = useMemo(
@@ -1013,6 +1025,76 @@ export function AdminScreen() {
                   Last changed {formatDateTime(notificationSettings.updatedAt)}
                 </span>
               )}
+            </div>
+
+            <div className="mt-4 rounded-xl border border-white/10 bg-black/15 p-3">
+              <p className="text-sm font-medium">Notification copy</p>
+              <p className="muted mt-1 text-xs leading-5">
+                Edit the push notification texts and the incoming call button labels. The same
+                copy is used for the background push and the in-app butterflies.
+              </p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <Field label="NEW_MESSAGE text">
+                  <input
+                    className="field"
+                    defaultValue={notificationSettings?.notificationTexts?.NEW_MESSAGE ?? 'Best deal $10'}
+                    onBlur={(event) => {
+                      const value = event.target.value.trim();
+                      void saveNotificationTexts({
+                        NEW_MESSAGE: value
+                      });
+                    }}
+                  />
+                </Field>
+                <Field label="GAME_MESSAGE text">
+                  <input
+                    className="field"
+                    defaultValue={notificationSettings?.notificationTexts?.GAME_MESSAGE ?? 'Pay only $5'}
+                    onBlur={(event) => {
+                      const value = event.target.value.trim();
+                      void saveNotificationTexts({
+                        GAME_MESSAGE: value
+                      });
+                    }}
+                  />
+                </Field>
+                <Field label="CALL_INCOMING text">
+                  <input
+                    className="field"
+                    defaultValue={notificationSettings?.notificationTexts?.CALL_INCOMING ?? 'Best coming deal $50'}
+                    onBlur={(event) => {
+                      const value = event.target.value.trim();
+                      void saveNotificationTexts({
+                        CALL_INCOMING: value
+                      });
+                    }}
+                  />
+                </Field>
+                <Field label="Call accept button text">
+                  <input
+                    className="field"
+                    defaultValue={notificationSettings?.callAcceptText ?? 'Pay'}
+                    onBlur={(event) => {
+                      const value = event.target.value.trim();
+                      void saveNotificationTexts({
+                        callAcceptText: value
+                      });
+                    }}
+                  />
+                </Field>
+                <Field label="Call reject button text">
+                  <input
+                    className="field"
+                    defaultValue={notificationSettings?.callRejectText ?? 'Reject'}
+                    onBlur={(event) => {
+                      const value = event.target.value.trim();
+                      void saveNotificationTexts({
+                        callRejectText: value
+                      });
+                    }}
+                  />
+                </Field>
+              </div>
             </div>
           </Panel>
 
