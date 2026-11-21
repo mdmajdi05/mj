@@ -162,6 +162,18 @@ export type IncomingCall = {
 
 export type CallState = 'IDLE' | 'RINGING' | 'CONNECTING' | 'ACTIVE' | 'RECONNECTING' | 'ENDED';
 
+export type AdminConversation = {
+  id: string;
+  status: string;
+  hostId: string | null;
+  guestId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+  hostName: string;
+  guestName: string;
+};
+
 export type AdminActivity = {
   notifications: Notification[];
   calls: CallRecord[];

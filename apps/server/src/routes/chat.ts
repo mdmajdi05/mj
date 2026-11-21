@@ -1164,23 +1164,136 @@ chatRouter.post(
 );
 
 chatRouter.get(
+  '/admin/conversations',
+  requireHost,
+  asyncHandler(async (_req, res) => {
+    const conversations = await prisma.conversation.findMany({
+      orderBy: { updatedAt: 'desc' },
+      include: { _count: { select: { messages: true } } }
+    });
+    const userIds = new Set<string>();
+    for (const conversation of conversations) {
+      if (conversation.hostId) userIds.add(conversation.hostId);
+      if (conversation.guestId) userIds.add(conversation.guestId);
+    }
+    const users = await prisma.user.findMany({
+      where: { id: { in: [...userIds] } },
+      select: { id: true, username: true, displayName: true, role: true }
+    });
+    const userMap = new Map(users.map((user) => [user.id, user]));
+    const rows = await Promise.all(
+      conversations.map(async (conversation) => {
+        const host = conversation.hostId ? userMap.get(conversation.hostId) : null;
+        const guest = conversation.guestId ? userMap.get(conversation.guestId) : null;
+        return {
+          id: conversation.id,
+          status: conversation.status,
+          hostId: conversation.hostId,
+          guestId: conversation.guestId,
+          createdAt: conversation.createdAt,
+          updatedAt: conversation.updatedAt,
+          messageCount: conversation._count?.messages ?? 0,
+          hostName: host ? host.displayName || host.username : 'Host',
+          guestName: guest ? guest.displayName || guest.username : 'Guest'
+        };
+      })
+    );
+    res.json(rows);
+  })
+);
+
+chatRouter.get(
   '/admin/messages',
   requireHost,
   asyncHandler(async (req: AuthRequest, res) => {
     const query = String(req.query.q ?? '').slice(0, 100);
+    const conversationId = String(req.query.conversationId ?? '').trim();
     const rows = await prisma.message.findMany({
       where: {
         deletedAt: null,
+        ...(conversationId ? { conversationId } : {}),
         ...(query ? { content: { contains: query, mode: 'insensitive' as const } } : {})
       },
       orderBy: { createdAt: 'desc' },
       take: 250,
       include: {
         sender: { select: { username: true, role: true } },
-        conversation: { select: { status: true } }
+        conversation: { select: { id: true, status: true } }
       }
     });
     res.json(rows);
+  })
+);
+
+/**
+ * Admin message delete. This is the soft-delete entry point: the selected
+ * message copy(s) of the chosen member(s) move to the Recycle Bin instead of
+ * being removed from the database right away. An empty `ids` array deletes every
+ * message of the conversation. `deleteFor` defaults to both members, which is
+ * the "complete message delete" for the whole chat.
+ */
+chatRouter.post(
+  '/admin/messages/delete',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({
+        conversationId: z.string().min(1).optional(),
+        ids: z.array(z.string().min(1)).max(500).optional(),
+        deleteFor: z.array(z.nativeEnum(Role)).min(1).max(2).optional()
+      })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) throw new HttpError(400, 'Invalid message delete request');
+
+    const pair = await pairOrThrow(req.user!.id);
+    const conversation = await prisma.conversation.findUnique({
+      where: { hostId_guestId: { hostId: pair.host.id, guestId: pair.guest.id } }
+    });
+    if (!conversation) throw new HttpError(404, 'Conversation not found');
+    if (parsed.data.conversationId && parsed.data.conversationId !== conversation.id) {
+      throw new HttpError(404, 'Conversation not found');
+    }
+
+    const rows = await prisma.message.findMany({
+      where: parsed.data.ids?.length
+        ? {
+            conversationId: conversation.id,
+            destination: MessageDestination.CHAT,
+            deletedAt: null,
+            id: { in: parsed.data.ids }
+          }
+        : {
+            conversationId: conversation.id,
+            destination: MessageDestination.CHAT,
+            deletedAt: null
+          },
+      select: { id: true }
+    });
+    const ids = rows.map((row) => row.id);
+    const count = ids.length;
+
+    const targets = parsed.data.deleteFor?.length ? parsed.data.deleteFor : [Role.HOST, Role.GUEST];
+    const userIds = [
+      ...new Set(
+        targets.map((role) => (role === Role.HOST ? pair.host.id : pair.guest.id))
+      )
+    ];
+
+    if (ids.length) {
+      await prisma.messageHide.createMany({
+        data: ids.flatMap((messageId) => userIds.map((userId) => ({ messageId, userId }))),
+        skipDuplicates: true
+      });
+    }
+
+    await audit(req.user!.id, 'ADMIN_MESSAGE_DELETE', conversation.id, {
+      count,
+      ids,
+      deleteFor: targets
+    });
+
+    for (const userId of userIds) emitToUser(userId, 'message:hidden', { ids });
+    res.json({ ok: true, count, ids });
   })
 );
 
@@ -1198,6 +1311,14 @@ chatRouter.get(
       include: {
         sender: { select: { username: true, role: true, displayName: true } },
         replyTo: { select: { id: true, content: true, attachmentKind: true } },
+        conversation: {
+          select: {
+            id: true,
+            status: true,
+            hostId: true,
+            guestId: true
+          }
+        },
         hides: {
           include: { user: { select: { id: true, username: true, role: true } } }
         }
