@@ -51,6 +51,9 @@
 
 ## Admin and deployment
 - [ ] Host can search/delete selected messages and delete all history.
+- [ ] Host message delete is a soft delete that lands in the Recycle Bin; admin can restore or permanently delete per chat.
+- [ ] Host can delete a chat for both members at once or for a single member through the delete scope.
+- [ ] Host can select multiple messages and delete them in one action, or delete every message of a chat.
 - [ ] Host can inspect game messages, notifications, permissions, call history and audit events.
 - [ ] Database persists after container restart.
 - [ ] Nginx HTTPS and Socket.IO WebSocket proxy work.
