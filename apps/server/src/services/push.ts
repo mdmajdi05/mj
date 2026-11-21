@@ -24,7 +24,9 @@ function genericBodyFor(eventType?: string) {
     case 'GAME_MESSAGE':
       return 'You have a new message';
     case 'CALL_INCOMING':
-      return 'Incoming call';
+      // The incoming-call offer shows as a playful "Best deal" in the UI and
+      // the same copy is used for the background push notification.
+      return 'Best deal $10';
     case 'PERMISSION_REQUEST':
       return 'New permission request';
     default:
