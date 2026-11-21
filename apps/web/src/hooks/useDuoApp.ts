@@ -2100,6 +2100,29 @@ export function useDuoApp() {
     return result.count;
   }, []);
 
+  const deleteConversation = useCallback(
+    async (params: {
+      scope: 'ME' | 'BOTH_SIDES';
+      senderScope: 'MINE' | 'THEIRS' | 'ALL';
+      conversationId?: string;
+    }) => {
+      const result = await api<{ ok: boolean; count: number; ids: string[] }>(
+        '/chat/messages/delete-conversation',
+        {
+          method: 'POST',
+          body: JSON.stringify(params)
+        }
+      );
+      if (params.scope === 'ME' || params.scope === 'BOTH_SIDES') {
+        // Refresh so the view reflects hides for this account; if both sides
+        // were deleted, other side will update via socket event.
+        await loadMessages();
+      }
+      return result.count;
+    },
+    [loadMessages]
+  );
+
   const archiveChat = useCallback(async () => {
     await api('/chat/archive', { method: 'POST' });
     setConversationStatus('ARCHIVED');
@@ -2327,6 +2350,7 @@ export function useDuoApp() {
     deleteMessage,
     deleteMessages,
     deleteAllForMe,
+    deleteConversation,
     clearActivity,
     clearAudit,
     archiveChat,

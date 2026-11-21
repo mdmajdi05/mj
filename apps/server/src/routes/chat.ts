@@ -474,6 +474,83 @@ chatRouter.post(
   })
 );
 
+/**
+ * Soft-deletes a whole conversation for the requester or both participants.
+ * `senderScope` selects whose messages are affected: mine, theirs, or all.
+ * All affected copies go to the Recycle Bin as MessageHide rows.
+ */
+chatRouter.post(
+  '/messages/delete-conversation',
+  requireChatUnlock,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({
+        conversationId: z.string().min(1).optional(),
+        scope: z.enum(['ME', 'BOTH_SIDES']),
+        senderScope: z.enum(['MINE', 'THEIRS', 'ALL']).optional()
+      })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) throw new HttpError(400, 'Invalid delete request');
+
+    const pair = await pairOrThrow(req.user!.id);
+    let conversation = parsed.data.conversationId
+      ? await prisma.conversation.findUnique({ where: { id: parsed.data.conversationId } })
+      : await findConversationFor(req.user!.id);
+
+    if (
+      !conversation ||
+      (conversation.hostId !== pair.host.id && conversation.guestId !== pair.guest.id)
+    ) {
+      throw new HttpError(404, 'Conversation not found');
+    }
+
+    const senderScope = parsed.data.senderScope ?? 'ALL';
+    const mineId = req.user!.id;
+    const theirsId = pair.host.id === mineId ? pair.guest.id : pair.host.id;
+    const senderFilter =
+      senderScope === 'MINE'
+        ? { senderId: mineId }
+        : senderScope === 'THEIRS'
+          ? { senderId: theirsId }
+          : {};
+
+    const rows = await prisma.message.findMany({
+      where: {
+        conversationId: conversation.id,
+        destination: MessageDestination.CHAT,
+        deletedAt: null,
+        ...senderFilter
+      },
+      select: { id: true }
+    });
+    const ids = rows.map((row) => row.id);
+    const targetUserIds =
+      parsed.data.scope === 'BOTH_SIDES' ? [pair.host.id, pair.guest.id] : [req.user!.id];
+
+    if (ids.length) {
+      await prisma.messageHide.createMany({
+        data: ids.flatMap((messageId) =>
+          targetUserIds.map((userId) => ({ messageId, userId }))
+        ),
+        skipDuplicates: true
+      });
+    }
+
+    await audit(req.user!.id, 'SOFT_DELETE_CONVERSATION', conversation.id, {
+      count: ids.length,
+      scope: parsed.data.scope,
+      senderScope,
+      targetUserIds
+    });
+
+    for (const userId of targetUserIds) {
+      emitToUser(userId, 'message:hidden', { ids });
+    }
+
+    res.json({ ok: true, count: ids.length, ids, scope: parsed.data.scope, senderScope });
+  })
+);
+
 /* ------------------------------------------------------------------ */
 /* Private media (images and short videos)                             */
 /* ------------------------------------------------------------------ */
@@ -1363,9 +1440,9 @@ chatRouter.get(
 );
 
 /**
- * Recover soft-deleted messages: remove the per-account hides so the message
- * becomes visible again. `ids` recovers selected messages; `role` recovers all
- * messages hidden by that role; an empty body recovers everything.
+ * Recover soft-deleted messages. `recoverFor` controls which participant gets
+ * the copy back: HOST, GUEST, or BOTH. If the conversation was archived/deleted,
+ * it is reactivated so the recovered messages appear in chat.
  */
 chatRouter.post(
   '/admin/deleted-messages/recover',
@@ -1374,48 +1451,80 @@ chatRouter.post(
     const parsed = z
       .object({
         ids: z.array(z.string().min(1)).optional(),
-        role: z.nativeEnum(Role).optional()
+        role: z.nativeEnum(Role).optional(),
+        recoverFor: z.array(z.nativeEnum(Role)).min(1).max(2).optional()
       })
       .safeParse(req.body ?? {});
     if (!parsed.success) throw new HttpError(400, 'Invalid recovery request');
 
     const ids = parsed.data.ids?.length ? parsed.data.ids : undefined;
-    let count = 0;
+    const recoverRoles = parsed.data.recoverFor?.length
+      ? parsed.data.recoverFor
+      : parsed.data.role
+        ? [parsed.data.role]
+        : [Role.HOST, Role.GUEST];
 
-    if (ids) {
-      const result = await prisma.messageHide.deleteMany({ where: { messageId: { in: ids } } });
-      await prisma.message.updateMany({
-        where: { id: { in: ids }, deletedAt: { not: null } },
-        data: { deletedAt: null }
-      });
-      count = result.count;
-    } else if (parsed.data.role) {
-      const users = await prisma.user.findMany({
-        where: { role: parsed.data.role },
-        select: { id: true }
-      });
+    const targetRows = await prisma.message.findMany({
+      where: {
+        destination: MessageDestination.CHAT,
+        ...(ids ? { id: { in: ids } } : {}),
+        ...(parsed.data.role && !ids
+          ? { hides: { some: { user: { role: parsed.data.role } } } }
+          : !ids
+            ? { OR: [{ deletedAt: { not: null } }, { hides: { some: {} } }] }
+            : {})
+      },
+      select: {
+        id: true,
+        conversationId: true,
+        conversation: { select: { id: true, hostId: true, guestId: true, status: true } }
+      }
+    });
+
+    const targetIds = targetRows.map((row) => row.id);
+    const userIds = new Set<string>();
+    for (const row of targetRows) {
+      if (recoverRoles.includes(Role.HOST) && row.conversation?.hostId) {
+        userIds.add(row.conversation.hostId);
+      }
+      if (recoverRoles.includes(Role.GUEST) && row.conversation?.guestId) {
+        userIds.add(row.conversation.guestId);
+      }
+    }
+
+    let count = 0;
+    if (targetIds.length && userIds.size) {
       const result = await prisma.messageHide.deleteMany({
-        where: { userId: { in: users.map((user) => user.id) } }
+        where: { messageId: { in: targetIds }, userId: { in: [...userIds] } }
       });
       count = result.count;
-    } else {
-      const result = await prisma.messageHide.deleteMany({});
       await prisma.message.updateMany({
-        where: { deletedAt: { not: null } },
+        where: { id: { in: targetIds }, deletedAt: { not: null } },
         data: { deletedAt: null }
       });
-      count = result.count;
+
+      const conversationIds = [
+        ...new Set(targetRows.map((row) => row.conversationId).filter(Boolean))
+      ];
+      if (conversationIds.length) {
+        await prisma.conversation.updateMany({
+          where: {
+            id: { in: conversationIds },
+            status: { in: [ConversationStatus.ARCHIVED, ConversationStatus.DELETED] }
+          },
+          data: { status: ConversationStatus.ACTIVE }
+        });
+      }
     }
 
     await audit(req.user!.id, 'RECOVER_DELETED_MESSAGES', undefined, {
       count,
-      ids: ids?.length ?? 0,
-      role: parsed.data.role ?? 'ALL'
+      ids: targetIds.length,
+      recoverFor: recoverRoles
     });
-    // Every participant may still have the chat open; refresh their list.
     const recipients = await prisma.user.findMany({ select: { id: true } });
     for (const recipient of recipients) emitToUser(recipient.id, 'messages:recovered', {});
-    res.json({ ok: true, count });
+    res.json({ ok: true, count, recoveredFor: recoverRoles });
   })
 );
 
@@ -1506,6 +1615,118 @@ chatRouter.get(
         adminSoundNotifications: preferenceMap.get(user.id)?.adminSoundNotifications ?? true
       }))
     );
+  })
+);
+
+/**
+ * Permanently deletes a Guest account and every chat/message record that belongs
+ * to that guest. This is irreversible: messages are removed from the database,
+ * not moved to the Recycle Bin.
+ */
+chatRouter.delete(
+  '/admin/users/:id',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const userId = String(req.params.id || '').trim();
+    if (!userId) throw new HttpError(400, 'User id is required');
+
+    const target = await prisma.user.findUnique({ where: { id: userId } });
+    if (!target) throw new HttpError(404, 'User not found');
+    if (target.role !== Role.GUEST) {
+      throw new HttpError(400, 'Only Guest accounts can be deleted here');
+    }
+
+    const conversations = await prisma.conversation.findMany({
+      where: { guestId: userId },
+      select: { id: true }
+    });
+    const conversationIds = conversations.map((conversation) => conversation.id);
+
+    const [conversationMessages, ownedMedia, gameMessages] = await Promise.all([
+      conversationIds.length
+        ? prisma.message.findMany({
+            where: { conversationId: { in: conversationIds } },
+            select: { id: true, attachmentId: true }
+          })
+        : Promise.resolve([]),
+      prisma.chatMedia.findMany({ where: { ownerId: userId }, select: { id: true } }),
+      prisma.gameMessage.findMany({
+        where: { OR: [{ senderId: userId }, { recipientId: userId }] },
+        select: { id: true }
+      })
+    ]);
+
+    const mediaIds = [
+      ...new Set([
+        ...conversationMessages
+          .map((message) => message.attachmentId)
+          .filter((id): id is string => Boolean(id)),
+        ...ownedMedia.map((media) => media.id)
+      ])
+    ];
+
+    await prisma.$transaction(async (tx) => {
+      if (conversationIds.length) {
+        await tx.conversation.deleteMany({ where: { id: { in: conversationIds } } });
+      }
+
+      await tx.gameMessage.deleteMany({
+        where: { OR: [{ senderId: userId }, { recipientId: userId }] }
+      });
+      await tx.notification.deleteMany({
+        where: { OR: [{ userId }, { actorId: userId }] }
+      });
+      await tx.permission.deleteMany({
+        where: { OR: [{ requestedBy: userId }, { grantedBy: userId }] }
+      });
+      await tx.callParticipant.deleteMany({ where: { userId } });
+      await tx.gameSession.deleteMany({ where: { userId } });
+      await tx.userPreference.deleteMany({ where: { userId } });
+      await tx.notificationPreference.deleteMany({ where: { userId } });
+      await tx.screenPreference.deleteMany({ where: { userId } });
+      await tx.restoreEvent.deleteMany({ where: { userId } });
+      await tx.butterflyNotificationEvent.deleteMany({ where: { userId } });
+      await tx.archivedConversation.deleteMany({
+        where: { conversationId: { in: conversationIds } }
+      });
+      // Hosts may have this guest selected as the active peer.
+      await tx.userPreference.updateMany({
+        where: { activePeerId: userId },
+        data: { activePeerId: null }
+      });
+      await tx.adminAuditLog.deleteMany({
+        where: { OR: [{ actorId: userId }, { targetId: userId }] }
+      });
+      if (mediaIds.length) {
+        await tx.chatMedia.deleteMany({ where: { id: { in: mediaIds } } });
+      }
+      await tx.user.delete({ where: { id: userId } });
+    });
+
+    await audit(req.user!.id, 'DELETE_GUEST_USER', userId, {
+      username: target.username,
+      conversations: conversationIds.length,
+      messages: conversationMessages.length,
+      gameMessages: gameMessages.length,
+      media: mediaIds.length
+    });
+
+    const recipients = await prisma.user.findMany({ select: { id: true } });
+    for (const recipient of recipients) {
+      emitToUser(recipient.id, 'contact:removed', { userId });
+      emitToUser(recipient.id, 'messages:recovered', {});
+    }
+    emitToUser(userId, 'session:revoked', {});
+
+    res.json({
+      ok: true,
+      deleted: {
+        userId,
+        conversations: conversationIds.length,
+        messages: conversationMessages.length,
+        gameMessages: gameMessages.length
+      }
+    });
   })
 );
 

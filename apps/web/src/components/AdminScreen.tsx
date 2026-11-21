@@ -116,6 +116,7 @@ export function AdminScreen() {
   const [deleteFor, setDeleteFor] = useState<'BOTH' | 'HOST' | 'GUEST'>('BOTH');
   const [deleteAllOpen, setDeleteAllOpen] = useState(false);
   const [deleteConfirmIds, setDeleteConfirmIds] = useState<string[] | null>(null);
+  const [deleteUserTarget, setDeleteUserTarget] = useState<AdminUser | null>(null);
 
   const deleteForLabel =
     deleteFor === 'BOTH' ? 'Both members' : deleteFor === 'HOST' ? 'Host only' : 'Guest only';
@@ -278,6 +279,29 @@ export function AdminScreen() {
     }
   }
 
+  async function deleteGuestUser() {
+    if (!deleteUserTarget) return;
+    setBusy(`delete-user-${deleteUserTarget.id}`);
+    try {
+      const result = await api<{
+        ok: boolean;
+        deleted: { conversations: number; messages: number; gameMessages: number };
+      }>(`/chat/admin/users/${deleteUserTarget.id}`, { method: 'DELETE' });
+      const deletedName = deleteUserTarget.displayName || deleteUserTarget.username;
+      setDeleteUserTarget(null);
+      setActiveConversationId('');
+      await refresh(search);
+      await Promise.allSettled([duo.loadContacts(), duo.loadSummary()]);
+      duo.setNotice(
+        `${deletedName} deleted permanently. Removed ${result.deleted.messages} chat message(s), ${result.deleted.conversations} conversation(s), and ${result.deleted.gameMessages} game message(s).`
+      );
+    } catch (cause) {
+      duo.setError(cause instanceof Error ? cause.message : 'Guest could not be deleted');
+    } finally {
+      setBusy('');
+    }
+  }
+
   function toggleAdminSelected(id: string) {
     setSelectedAdminIds((current) => {
       const next = new Set(current);
@@ -287,15 +311,28 @@ export function AdminScreen() {
     });
   }
 
-  async function recoverDeleted(ids?: string[], role?: 'HOST' | 'GUEST') {
-    if (!ids?.length && !role && !window.confirm('Recover every deleted message?')) return;
+  const [recoverPrompt, setRecoverPrompt] = useState<{
+    ids?: string[];
+    role?: 'HOST' | 'GUEST';
+    label: string;
+  } | null>(null);
+
+  async function recoverDeleted(
+    ids: string[] | undefined,
+    role: 'HOST' | 'GUEST' | undefined,
+    recoverFor: Array<'HOST' | 'GUEST'>
+  ) {
     setBusy('recover');
     try {
       await api('/chat/admin/deleted-messages/recover', {
         method: 'POST',
-        body: JSON.stringify({ ids, role })
+        body: JSON.stringify({ ids, role, recoverFor })
       });
-      await refresh(search);
+      setRecoverPrompt(null);
+      await refresh(search, activeConversationId || undefined);
+      duo.setNotice(
+        `Recovered for ${recoverFor.length === 2 ? 'Host and Guest' : recoverFor[0] === 'HOST' ? 'Host' : 'Guest'}.`
+      );
     } catch (cause) {
       duo.setError(cause instanceof Error ? cause.message : 'Recovery failed');
     } finally {
@@ -974,7 +1011,12 @@ export function AdminScreen() {
                 <option value="GUEST">User</option>
               </select>
               <Button
-                onClick={() => void recoverDeleted(undefined, deletedRole || undefined)}
+                onClick={() =>
+                  setRecoverPrompt({
+                    role: deletedRole || undefined,
+                    label: deletedRole ? `${deletedRole.toLowerCase()} messages` : 'all deleted messages'
+                  })
+                }
                 disabled={busy === 'recover' || visibleDeleted.length === 0}
               >
                 <RotateCcw size={14} /> Recover {deletedRole ? deletedRole.toLowerCase() : 'all'}
@@ -1000,7 +1042,12 @@ export function AdminScreen() {
                   <div className="flex shrink-0 gap-2">
                     <Button
                       className="!px-2.5 !py-1.5 text-xs"
-                      onClick={() => void recoverDeleted(group.messages.map((message) => message.id))}
+                      onClick={() =>
+                        setRecoverPrompt({
+                          ids: group.messages.map((message) => message.id),
+                          label: `all messages in ${conversationTitle(group.conversationId)}`
+                        })
+                      }
                       disabled={busy === 'recover'}
                     >
                       <RotateCcw size={13} /> Recover all
@@ -1053,7 +1100,9 @@ export function AdminScreen() {
                 <div className="flex shrink-0 gap-2">
                   <Button
                     className="!px-2.5 !py-1.5 text-xs"
-                    onClick={() => void recoverDeleted([message.id])}
+                    onClick={() =>
+                      setRecoverPrompt({ ids: [message.id], label: 'this message' })
+                    }
                     disabled={busy === 'recover'}
                   >
                     <RotateCcw size={13} /> Recover
@@ -1262,6 +1311,15 @@ export function AdminScreen() {
                         void toggleAdminNotificationType(user, 'adminSoundNotifications', !user.adminSoundNotifications)
                       }
                     />
+                    {user.role === 'GUEST' && (
+                      <Button
+                        variant="danger"
+                        onClick={() => setDeleteUserTarget(user)}
+                        disabled={busy === `delete-user-${user.id}`}
+                      >
+                        <Trash2 size={14} /> Delete guest permanently
+                      </Button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -1580,6 +1638,77 @@ export function AdminScreen() {
             disabled={busy === 'admin-delete'}
           >
             {busy === 'admin-delete' ? 'Deleting…' : 'Delete'}
+          </Button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={recoverPrompt !== null}
+        title="Recover messages"
+        onClose={() => setRecoverPrompt(null)}
+      >
+        <p className="muted text-sm leading-6">
+          Recover <strong>{recoverPrompt?.label}</strong>. Choose which side should get the messages
+          back. If that conversation is missing or archived, it will be reactivated.
+        </p>
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
+          <Button onClick={() => setRecoverPrompt(null)}>Cancel</Button>
+          <Button
+            onClick={() =>
+              recoverPrompt &&
+              void recoverDeleted(recoverPrompt.ids, recoverPrompt.role, ['HOST'])
+            }
+            disabled={busy === 'recover'}
+          >
+            Host side
+          </Button>
+          <Button
+            onClick={() =>
+              recoverPrompt &&
+              void recoverDeleted(recoverPrompt.ids, recoverPrompt.role, ['GUEST'])
+            }
+            disabled={busy === 'recover'}
+          >
+            Guest side
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() =>
+              recoverPrompt &&
+              void recoverDeleted(recoverPrompt.ids, recoverPrompt.role, ['HOST', 'GUEST'])
+            }
+            disabled={busy === 'recover'}
+          >
+            Both sides
+          </Button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={deleteUserTarget !== null}
+        title="Delete guest permanently?"
+        onClose={() => setDeleteUserTarget(null)}
+      >
+        <p className="muted text-sm leading-6">
+          Permanently delete{' '}
+          <strong>
+            {deleteUserTarget?.displayName || deleteUserTarget?.username || 'this guest'}
+          </strong>
+          ? This removes the guest account and all of their chat messages, conversations, and game
+          messages from the database. This cannot be undone and it does not go to the Recycle Bin.
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button onClick={() => setDeleteUserTarget(null)}>Cancel</Button>
+          <Button
+            variant="danger"
+            onClick={() => void deleteGuestUser()}
+            disabled={
+              !deleteUserTarget || busy === `delete-user-${deleteUserTarget.id}`
+            }
+          >
+            {deleteUserTarget && busy === `delete-user-${deleteUserTarget.id}`
+              ? 'Deleting…'
+              : 'Delete permanently'}
           </Button>
         </div>
       </Modal>

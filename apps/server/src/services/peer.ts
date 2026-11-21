@@ -95,7 +95,7 @@ export async function contactsFor(userId: string, onlineIds: string[]): Promise<
     orderBy: { createdAt: 'asc' }
   });
 
-  return Promise.all(
+  const contacts = await Promise.all(
     guests.map(async (guest) => {
       const conversation = await prisma.conversation.findUnique({
         where: { hostId_guestId: { hostId: me.id, guestId: guest.id } }
@@ -133,4 +133,12 @@ export async function contactsFor(userId: string, onlineIds: string[]): Promise<
       };
     })
   );
+
+  // Latest message first; contacts without messages stay at the bottom.
+  return contacts.sort((a, b) => {
+    const aTime = a.lastMessageAt ? Date.parse(a.lastMessageAt) : 0;
+    const bTime = b.lastMessageAt ? Date.parse(b.lastMessageAt) : 0;
+    if (aTime !== bTime) return bTime - aTime;
+    return (a.displayName || a.username).localeCompare(b.displayName || b.username);
+  });
 }

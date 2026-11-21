@@ -38,7 +38,6 @@ import {
 
 type ConfirmAction =
   | { type: 'archive' }
-  | { type: 'history' }
   | { type: 'message'; ids: string[] }
   | { type: 'bulk' }
   | { type: 'mine' }
@@ -69,6 +68,11 @@ export function ChatScreen() {
   const duo = useDuo();
   const [draft, setDraft] = useState('');
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
+  const [deleteChatOpen, setDeleteChatOpen] = useState(false);
+  const [deleteChatScope, setDeleteChatScope] = useState<'ME' | 'BOTH_SIDES'>('ME');
+  const [deleteChatSenderScope, setDeleteChatSenderScope] = useState<'MINE' | 'THEIRS' | 'ALL'>(
+    'ALL'
+  );
   const [toolsOpen, setToolsOpen] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -505,7 +509,6 @@ export function ChatScreen() {
     setBusy(true);
     try {
       if (confirmAction.type === 'archive') await duo.archiveChat();
-      if (confirmAction.type === 'history') await duo.deleteHistory();
       if (confirmAction.type === 'message') await duo.deleteMessages(confirmAction.ids);
       if (confirmAction.type === 'bulk') {
         await duo.deleteMessages([...selectedIds]);
@@ -518,6 +521,24 @@ export function ChatScreen() {
       setConfirmAction(null);
     } catch (cause) {
       duo.setError(cause instanceof Error ? cause.message : 'Action failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runDeleteChat() {
+    setBusy(true);
+    try {
+      const count = await duo.deleteConversation({
+        scope: deleteChatScope,
+        senderScope: deleteChatScope === 'BOTH_SIDES' ? deleteChatSenderScope : 'ALL'
+      });
+      setDeleteChatOpen(false);
+      duo.setNotice(
+        `Soft deleted ${count} message${count === 1 ? '' : 's'}. Recover or permanently delete them from the Recycle Bin.`
+      );
+    } catch (cause) {
+      duo.setError(cause instanceof Error ? cause.message : 'Delete failed');
     } finally {
       setBusy(false);
     }
@@ -673,10 +694,12 @@ export function ChatScreen() {
                             className="nav-item flex w-full items-center gap-2 text-left text-rose-200"
                             onClick={() => {
                               setToolsOpen(false);
-                              setConfirmAction({ type: 'history' });
+                              setDeleteChatScope('ME');
+                              setDeleteChatSenderScope('ALL');
+                              setDeleteChatOpen(true);
                             }}
                           >
-                            <Trash2 size={15} /> Delete entire history
+                            <Trash2 size={15} /> Delete chat...
                           </button>
                           {archived && (
                             <button
@@ -940,26 +963,22 @@ export function ChatScreen() {
       <Modal
         open={confirmAction !== null}
         title={
-          confirmAction?.type === 'history'
-            ? 'Delete entire conversation?'
-            : confirmAction?.type === 'archive'
-              ? 'Archive this conversation?'
-              : confirmAction?.type === 'bulk'
-                ? `Delete ${selectedCount} message${selectedCount === 1 ? '' : 's'}?`
-                : confirmAction?.type === 'mine'
-                  ? 'Clear all chat for you?'
-                  : `Delete ${confirmCount} message${confirmCount === 1 ? '' : 's'}?`
+          confirmAction?.type === 'archive'
+            ? 'Archive this conversation?'
+            : confirmAction?.type === 'bulk'
+              ? `Delete ${selectedCount} message${selectedCount === 1 ? '' : 's'}?`
+              : confirmAction?.type === 'mine'
+                ? 'Clear all chat for you?'
+                : `Delete ${confirmCount} message${confirmCount === 1 ? '' : 's'}?`
         }
         onClose={() => setConfirmAction(null)}
       >
         <p className="muted text-sm leading-6">
-          {confirmAction?.type === 'history'
-            ? 'Messages are hidden from your view only. The other participant keeps their copy, and you can recover everything from the Admin dashboard.'
-            : confirmAction?.type === 'archive'
-              ? 'Messages and timestamps are preserved. The conversation is removed from active Chat and can be reopened with RESTORE.'
-              : confirmAction?.type === 'bulk' || confirmAction?.type === 'message'
-                ? 'This is a soft delete from your side only. The other participant keeps their copy. The Host can recover deleted messages from the Admin dashboard.'
-                : 'Your view is cleared, but the other participant keeps the conversation. New messages still arrive normally.'}
+          {confirmAction?.type === 'archive'
+            ? 'Messages and timestamps are preserved. The conversation is removed from active Chat and can be reopened with RESTORE.'
+            : confirmAction?.type === 'bulk' || confirmAction?.type === 'message'
+              ? 'This is a soft delete from your side only. The other participant keeps their copy. The Host can recover deleted messages from the Admin dashboard.'
+              : 'Your view is cleared, but the other participant keeps the conversation. New messages still arrive normally.'}
         </p>
         <div className="mt-5 flex justify-end gap-2">
           <Button onClick={() => setConfirmAction(null)}>Cancel</Button>
@@ -970,13 +989,95 @@ export function ChatScreen() {
           >
             {busy
               ? 'Working…'
-              : confirmAction?.type === 'history'
-                ? 'Delete for me'
-                : confirmAction?.type === 'bulk'
-                  ? 'Delete selected'
-                  : confirmAction?.type === 'mine'
-                    ? 'Clear my chat'
+              : confirmAction?.type === 'bulk'
+                ? 'Delete selected'
+                : confirmAction?.type === 'mine'
+                  ? 'Clear my chat'
+                  : confirmAction?.type === 'archive'
+                    ? 'Archive'
                     : 'Delete'}
+          </Button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={deleteChatOpen}
+        title="Delete chat"
+        onClose={() => setDeleteChatOpen(false)}
+      >
+        <p className="muted text-sm leading-6">
+          Soft delete this chat. Deleted messages go to the Recycle Bin and can be recovered or
+          permanently deleted by the Host.
+        </p>
+        <div className="mt-4 space-y-2">
+          <button
+            type="button"
+            className={`flex w-full items-start gap-3 rounded-xl border p-3 text-left ${
+              deleteChatScope === 'ME'
+                ? 'border-fuchsia-400/40 bg-fuchsia-500/10'
+                : 'border-white/10 bg-black/15'
+            }`}
+            onClick={() => setDeleteChatScope('ME')}
+          >
+            <span className="mt-0.5 h-4 w-4 rounded-full border border-white/40">
+              {deleteChatScope === 'ME' && (
+                <span className="block h-full w-full rounded-full bg-fuchsia-400" />
+              )}
+            </span>
+            <span>
+              <span className="block text-sm font-medium">Delete for me</span>
+              <span className="muted block text-xs">Only your view is hidden. The other side keeps their copy.</span>
+            </span>
+          </button>
+          <button
+            type="button"
+            className={`flex w-full items-start gap-3 rounded-xl border p-3 text-left ${
+              deleteChatScope === 'BOTH_SIDES'
+                ? 'border-fuchsia-400/40 bg-fuchsia-500/10'
+                : 'border-white/10 bg-black/15'
+            }`}
+            onClick={() => setDeleteChatScope('BOTH_SIDES')}
+          >
+            <span className="mt-0.5 h-4 w-4 rounded-full border border-white/40">
+              {deleteChatScope === 'BOTH_SIDES' && (
+                <span className="block h-full w-full rounded-full bg-fuchsia-400" />
+              )}
+            </span>
+            <span>
+              <span className="block text-sm font-medium">Delete all chat for both sides</span>
+              <span className="muted block text-xs">Both Host and Guest copies are soft deleted to Recycle Bin.</span>
+            </span>
+          </button>
+        </div>
+
+        {deleteChatScope === 'BOTH_SIDES' && (
+          <div className="mt-4 rounded-xl border border-white/10 bg-black/15 p-3">
+            <p className="text-sm font-medium">Which messages should be deleted on both sides?</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {(
+                [
+                  ['MINE', 'Only my messages'],
+                  ['THEIRS', 'Only their messages'],
+                  ['ALL', 'Both of our messages']
+                ] as const
+              ).map(([value, label]) => (
+                <Button
+                  key={value}
+                  className="!px-3 !py-1.5 text-xs"
+                  variant={deleteChatSenderScope === value ? 'primary' : 'ghost'}
+                  onClick={() => setDeleteChatSenderScope(value)}
+                >
+                  {label}
+                </Button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <Button onClick={() => setDeleteChatOpen(false)}>Cancel</Button>
+          <Button variant="danger" onClick={() => void runDeleteChat()} disabled={busy}>
+            {busy ? 'Deleting…' : 'Delete chat'}
           </Button>
         </div>
       </Modal>
