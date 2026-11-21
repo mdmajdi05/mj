@@ -21,6 +21,12 @@ import {
 import { contactsFor, pairFor, peerFor, selectPeer } from '../services/peer';
 import { notifyUser, emitToUser } from '../services/notifier';
 import { onlineUserIds } from '../services/presence';
+import {
+  getNotificationFeatureState,
+  isGlobalNotificationsEnabled,
+  isPushConfigured,
+  setGlobalNotificationsEnabled
+} from '../services/notificationSettings';
 
 export const chatRouter = Router();
 chatRouter.use(requireAuth);
@@ -770,9 +776,10 @@ chatRouter.post(
 chatRouter.get(
   '/preferences',
   asyncHandler(async (req: AuthRequest, res) => {
-    const [notifications, userPreferences] = await Promise.all([
+    const [notifications, userPreferences, feature] = await Promise.all([
       prisma.notificationPreference.findUnique({ where: { userId: req.user!.id } }),
-      prisma.userPreference.findUnique({ where: { userId: req.user!.id } })
+      prisma.userPreference.findUnique({ where: { userId: req.user!.id } }),
+      getNotificationFeatureState()
     ]);
     res.json({
       butterfly: notifications?.butterfly ?? true,
@@ -781,7 +788,11 @@ chatRouter.get(
       activitySharing: notifications?.activitySharing ?? false,
       reducedMotion: userPreferences?.reducedMotion ?? false,
       defaultPeerMicOn: userPreferences?.defaultPeerMicOn ?? true,
-      chatNotifications: userPreferences?.chatNotifications ?? true
+      chatNotifications: userPreferences?.chatNotifications ?? true,
+      // The Host's global switch and server push availability are exposed so
+      // the Settings screen can hide every notification option when disabled.
+      notificationsAvailable: feature.enabled,
+      pushConfigured: feature.pushConfigured
     });
   })
 );
@@ -805,6 +816,12 @@ chatRouter.post(
     const enablingNotifications = Object.values(notificationPreferences).some(
       (value) => value === true
     );
+    if (enablingNotifications && !(await isGlobalNotificationsEnabled())) {
+      throw new HttpError(
+        403,
+        'Notifications are disabled by the Host for everyone. Ask the Host to turn them back on first.'
+      );
+    }
     if (enablingNotifications && !(await wantsChatNotifications(req.user!.id))) {
       throw new HttpError(
         403,
@@ -1344,23 +1361,9 @@ chatRouter.post(
       update: { chatNotifications: parsed.data.chatNotifications }
     });
 
-    if (!parsed.data.chatNotifications) {
-      // Revoking access must also stop notifications that already exist on the
-      // user's browser: clear browser delivery, disable prefs and drop every
-      // push endpoint registered for this account.
-      await prisma.notificationPreference.upsert({
-        where: { userId: parsed.data.userId },
-        create: {
-          userId: parsed.data.userId,
-          butterfly: false,
-          sound: false,
-          browser: false
-        },
-        update: { butterfly: false, sound: false, browser: false }
-      });
-      await prisma.pushSubscription.deleteMany({ where: { userId: parsed.data.userId } });
-    }
-
+    // Delivery is gated centrally by chatNotifications, so the account's own
+    // preferences and push subscription are kept. Re-enabling restores
+    // notifications immediately without another browser prompt.
     await audit(req.user!.id, 'UPDATE_USER_FEATURES', parsed.data.userId, {
       chatNotifications: parsed.data.chatNotifications
     });
@@ -1368,15 +1371,47 @@ chatRouter.post(
       chatNotifications: parsed.data.chatNotifications
     });
     emitToUser(parsed.data.userId, 'notification:preferences', {
-      chatNotifications: parsed.data.chatNotifications,
-      ...(parsed.data.chatNotifications
-        ? {}
-        : { butterfly: false, sound: false, browser: false })
+      chatNotifications: parsed.data.chatNotifications
     });
     res.json({ ok: true });
   })
 );
 
+
+/* ------------------------------------------------------------------ */
+/* Admin: global notification switch                                  */
+/* ------------------------------------------------------------------ */
+
+chatRouter.get(
+  '/admin/notification-settings',
+  requireHost,
+  asyncHandler(async (_req, res) => {
+    res.json(await getNotificationFeatureState());
+  })
+);
+
+chatRouter.post(
+  '/admin/notification-settings',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z.object({ enabled: z.boolean() }).safeParse(req.body);
+    if (!parsed.success) throw new HttpError(400, 'Invalid notification setting');
+
+    const state = await setGlobalNotificationsEnabled(parsed.data.enabled, req.user!.id);
+    await audit(req.user!.id, 'UPDATE_NOTIFICATION_SETTING', undefined, {
+      enabled: parsed.data.enabled
+    });
+
+    // Every connected client updates immediately: when disabled the Settings
+    // options disappear and any in-page browser notification is suppressed.
+    const recipients = await prisma.user.findMany({ select: { id: true } });
+    for (const recipient of recipients) {
+      emitToUser(recipient.id, 'notification:global', { enabled: state.enabled });
+    }
+
+    res.json(state);
+  })
+);
 
 /* ------------------------------------------------------------------ */
 /* Admin: Study Assistant content                                      */
@@ -1842,12 +1877,18 @@ chatRouter.post(
 /* ------------------------------------------------------------------ */
 
 chatRouter.get('/push/public-key', (_req, res) => {
-  res.json({ publicKey: process.env.VAPID_PUBLIC_KEY || null });
+  res.json({
+    publicKey: process.env.VAPID_PUBLIC_KEY || null,
+    configured: isPushConfigured()
+  });
 });
 
 chatRouter.post(
   '/push/subscribe',
   asyncHandler(async (req: AuthRequest, res) => {
+    if (!(await isGlobalNotificationsEnabled())) {
+      throw new HttpError(403, 'Notifications are disabled by the Host.');
+    }
     const parsed = z
       .object({
         endpoint: z.string().url().max(3000),

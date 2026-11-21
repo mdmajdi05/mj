@@ -166,6 +166,16 @@ model Notification {
   readAt    DateTime?
   @@index([userId, readAt, createdAt])
 }
+/// Global, Host-managed switch for the whole notification feature. When this is
+/// off no chat notification is created or pushed to any account and the
+/// notification options are hidden from every user's Settings screen.
+model NotificationSetting {
+  id        String   @id @default("global")
+  enabled   Boolean  @default(true)
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+}
+
 model NotificationPreference {
   id               String  @id @default(cuid())
   userId           String  @unique

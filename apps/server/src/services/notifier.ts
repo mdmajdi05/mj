@@ -1,6 +1,7 @@
 import type { Server } from 'socket.io';
 import { prisma } from '../lib/prisma';
 import { sendGenericPush } from './push';
+import { isGlobalNotificationsEnabled } from './notificationSettings';
 
 let ioRef: Server | null = null;
 
@@ -23,15 +24,18 @@ type NotifyInput = {
  * Socket.IO. Message text and access codes must never be put in payloads.
  */
 export async function notifyUser(input: NotifyInput) {
-  // Chat notifications are controlled by the Host. Re-check centrally so no
-  // message path can bypass the per-account grant.
-  if (input.eventType === 'NEW_MESSAGE' || input.eventType === 'GAME_MESSAGE') {
-    const access = await prisma.userPreference.findUnique({
-      where: { userId: input.userId },
-      select: { chatNotifications: true }
-    });
-    if (access && access.chatNotifications === false) return null;
-  }
+  // The Host's global switch is authoritative: when it is off nothing is
+  // persisted, emitted or pushed for any account, from any code path.
+  if (!(await isGlobalNotificationsEnabled())) return null;
+
+  // Per-account gate. The Host grant (chatNotifications) must allow
+  // notifications; butterfly, sound and Chrome push each have their own
+  // user-controlled switch.
+  const preference = await prisma.userPreference.findUnique({
+    where: { userId: input.userId },
+    select: { chatNotifications: true }
+  });
+  if (preference?.chatNotifications === false) return null;
 
   const notification = await prisma.notification.create({
     data: {
@@ -74,7 +78,7 @@ export async function notifyUser(input: NotifyInput) {
   }
 
   if (input.push) {
-    await sendGenericPush(input.userId).catch((error) =>
+    await sendGenericPush(input.userId, input.eventType).catch((error) =>
       console.error('Push notification failed', error)
     );
   }

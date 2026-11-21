@@ -34,7 +34,10 @@ export function registerGameSocketHandlers(_io: Server, socket: Socket) {
       userId: other.id,
       actorId: user.id,
       eventType: 'GAME_STARTED',
-      payload: { game: game.name, slug: game.slug }
+      payload: { game: game.name, slug: game.slug },
+      butterfly: true,
+      push: true,
+      dedupeKey: `game-start:${game.id}:${other.id}`
     });
     emitToUser(other.id, 'game:activity', {
       eventType: 'GAME_STARTED',
@@ -55,6 +58,24 @@ export function registerGameSocketHandlers(_io: Server, socket: Socket) {
         data: { score }
       })
       .catch(() => undefined);
+
+    const other = await otherUser();
+    if (other) {
+      await notifyUser({
+        userId: other.id,
+        actorId: user.id,
+        eventType: 'GAME_SCORE_UPDATE',
+        payload: { score },
+        push: true,
+        dedupeKey: `game-score:${sessionId}:${other.id}`
+      });
+      emitToUser(other.id, 'game:activity', {
+        eventType: 'GAME_SCORE_UPDATE',
+        score,
+        actor: user.username,
+        createdAt: new Date()
+      });
+    }
   });
 
   socket.on('game:end', async (payload: { score?: number }) => {
@@ -75,6 +96,15 @@ export function registerGameSocketHandlers(_io: Server, socket: Socket) {
       where: { userId: user.id }
     });
     if (preference?.activitySharing) {
+      await notifyUser({
+        userId: other.id,
+        actorId: user.id,
+        eventType: 'GAME_ENDED',
+        payload: { score },
+        butterfly: true,
+        push: true,
+        dedupeKey: `game-end:${sessionId}:${other.id}`
+      });
       emitToUser(other.id, 'game:activity', {
         eventType: 'GAME_ENDED',
         score,

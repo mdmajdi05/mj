@@ -51,7 +51,9 @@ const defaultPreferences: Preferences = {
   activitySharing: false,
   reducedMotion: false,
   defaultPeerMicOn: true,
-  chatNotifications: true
+  chatNotifications: true,
+  notificationsAvailable: true,
+  pushConfigured: true
 };
 
 export function useDuoApp() {
@@ -302,6 +304,8 @@ export function useDuoApp() {
 
   const playNotificationSound = useCallback(() => {
     const currentPrefs = prefsRef.current;
+    if (!currentPrefs.notificationsAvailable) return;
+    if (!currentPrefs.chatNotifications) return;
     if (!currentPrefs.sound || currentPrefs.reducedMotion) return;
     try {
       const AudioContextClass =
@@ -326,13 +330,14 @@ export function useDuoApp() {
 
   const showBrowserNotification = useCallback(() => {
     const currentPrefs = prefsRef.current;
+    if (!currentPrefs.notificationsAvailable) return;
     if (!currentPrefs.chatNotifications) return;
     if (!currentPrefs.browser) return;
     if (typeof window === 'undefined' || !('Notification' in window)) return;
     if (Notification.permission !== 'granted') return;
-    // Generic title only — never include message text or the sender.
+    // Generic copy only — never include message text or the sender.
     const options: NotificationOptions = {
-      body: '',
+      body: 'You have a new message',
       tag: 'study-with-game',
       silent: true
     };
@@ -356,9 +361,11 @@ export function useDuoApp() {
   }, []);
 
   const addButterfly = useCallback((id: string) => {
-    // Butterflies are an always-on cue for messages; only reduced-motion
-    // users opt out.
-    if (prefsRef.current.reducedMotion) return;
+    // Butterflies follow the same notification gates as sound and Chrome push.
+    const currentPrefs = prefsRef.current;
+    if (!currentPrefs.notificationsAvailable) return;
+    if (!currentPrefs.chatNotifications) return;
+    if (!currentPrefs.butterfly || currentPrefs.reducedMotion) return;
     if (butterflyIds.current.has(id)) return;
     butterflyIds.current.add(id);
     setButterflies((current) => [...current.slice(-9), id]);
@@ -431,27 +438,6 @@ export function useDuoApp() {
     }
     return summary;
   }, []);
-
-  /**
-   * If the Host revoked notification access while this browser was offline,
-   * drop the stale Chrome push subscription the next time the app opens.
-   */
-  useEffect(() => {
-    if (!user || prefs.chatNotifications) return;
-    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
-    void navigator.serviceWorker
-      .getRegistration()
-      .then(async (registration) => {
-        const subscription = await registration?.pushManager.getSubscription();
-        if (!subscription) return;
-        await api('/chat/push/subscribe', {
-          method: 'DELETE',
-          body: JSON.stringify({ endpoint: subscription.endpoint })
-        }).catch(() => undefined);
-        await subscription.unsubscribe().catch(() => undefined);
-      })
-      .catch(() => undefined);
-  }, [user, prefs.chatNotifications]);
 
   const refreshAll = useCallback(async () => {
     await Promise.allSettled([
@@ -669,6 +655,10 @@ export function useDuoApp() {
   );
 
   const enableBrowserNotifications = useCallback(async () => {
+    if (!prefsRef.current.notificationsAvailable) {
+      showError('Notifications are disabled by the Host for everyone.');
+      return;
+    }
     if (!prefsRef.current.chatNotifications) {
       showError('Chat notifications are disabled by the Host.');
       return;
@@ -706,7 +696,9 @@ export function useDuoApp() {
       if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
         throw new Error('This browser does not support background push notifications.');
       }
-      const registration = await navigator.serviceWorker.register('/sw.js');
+      const registration = await navigator.serviceWorker.register(
+        API ? `/sw.js?api=${encodeURIComponent(API)}` : '/sw.js'
+      );
       await navigator.serviceWorker.ready;
       const keyResponse = await api<{ publicKey: string | null }>('/chat/push/public-key');
       if (!keyResponse.publicKey) {
@@ -1550,28 +1542,12 @@ export function useDuoApp() {
 
     socket.on('notification:access', (payload: { chatNotifications?: boolean }) => {
       const allowed = payload?.chatNotifications !== false;
-      const patch = allowed
-        ? { chatNotifications: true }
-        : { chatNotifications: false, browser: false, butterfly: false, sound: false };
+      const patch = { chatNotifications: allowed };
       setPrefs((current) => ({ ...current, ...patch }));
       prefsRef.current = { ...prefsRef.current, ...patch };
       if (!allowed) {
-        // Revocation from the Admin panel must also remove this browser's
-        // Chrome push subscription, not just hide the setting.
-        if ('serviceWorker' in navigator) {
-          void navigator.serviceWorker
-            .getRegistration()
-            .then(async (registration) => {
-              const subscription = await registration?.pushManager.getSubscription();
-              if (!subscription) return;
-              await api('/chat/push/subscribe', {
-                method: 'DELETE',
-                body: JSON.stringify({ endpoint: subscription.endpoint })
-              }).catch(() => undefined);
-              await subscription.unsubscribe().catch(() => undefined);
-            })
-            .catch(() => undefined);
-        }
+        // Delivery is blocked on the server and in every notification helper.
+        // Keep the browser subscription so re-enabling works immediately.
         showNotice('Chat notifications were disabled by the Host.');
       } else {
         showNotice('Chat notifications were granted by the Host. You can enable them in Settings.');
@@ -1585,6 +1561,17 @@ export function useDuoApp() {
         prefsRef.current = { ...prefsRef.current, ...patch };
       }
     );
+
+    socket.on('notification:global', (payload: { enabled?: boolean }) => {
+      const enabled = payload?.enabled !== false;
+      setPrefs((current) => ({ ...current, notificationsAvailable: enabled }));
+      prefsRef.current = { ...prefsRef.current, notificationsAvailable: enabled };
+      showNotice(
+        enabled
+          ? 'Notifications are available again. You can enable them in Settings.'
+          : 'Notifications were disabled by the Host for all accounts.'
+      );
+    });
 
     socket.on('study:updated', () => {
       if (typeof window !== 'undefined') {
