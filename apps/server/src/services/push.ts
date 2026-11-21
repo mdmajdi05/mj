@@ -22,7 +22,9 @@ function genericBodyFor(eventType?: string) {
   switch (eventType) {
     case 'NEW_MESSAGE':
     case 'GAME_MESSAGE':
-      return 'You have a new message';
+      // Secret app: recipients should never learn this was a real message.
+      // The copy stays promotional/offer-like.
+      return 'Best deal $10';
     case 'CALL_INCOMING':
       // The incoming-call offer shows as a playful "Best deal" in the UI and
       // the same copy is used for the background push notification.
