@@ -400,12 +400,34 @@ export function AdminScreen() {
   }
 
   async function saveNotificationTexts(copies: Record<string, string>) {
-    const state = await api<NotificationFeatureState>('/chat/admin/notification-settings', {
-      method: 'POST',
-      body: JSON.stringify({ notificationTexts: copies })
-    });
-    setNotificationSettings(state);
-    duo.setNotice('Notification copy updated.');
+    const textDefaults: Record<string, string> = {
+      NEW_MESSAGE: 'Best deal $10',
+      GAME_MESSAGE: 'Pay only $5',
+      CALL_INCOMING: 'Best coming deal $50'
+    };
+    const payload: Record<string, unknown> = {};
+    const textCopies = Object.entries(copies).filter(([key]) => key in textDefaults);
+    if (textCopies.length) {
+      // The server replaces the whole object, so keep every other saved copy.
+      payload.notificationTexts = {
+        ...textDefaults,
+        ...(notificationSettings?.notificationTexts ?? {}),
+        ...Object.fromEntries(textCopies)
+      };
+    }
+    for (const [key, value] of Object.entries(copies)) {
+      if (key === 'callAcceptText' || key === 'callRejectText') payload[key] = value;
+    }
+    try {
+      const state = await api<NotificationFeatureState>('/chat/admin/notification-settings', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      setNotificationSettings(state);
+      duo.setNotice('Notification copy updated.');
+    } catch (cause) {
+      duo.setError(cause instanceof Error ? cause.message : 'Notification copy could not be saved');
+    }
   }
 
   const visibleDeleted = useMemo(
@@ -1117,66 +1139,49 @@ export function AdminScreen() {
                 copy is used for the background push and the in-app butterflies.
               </p>
               <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                <Field label="NEW_MESSAGE text">
-                  <input
-                    className="field"
-                    defaultValue={notificationSettings?.notificationTexts?.NEW_MESSAGE ?? 'Best deal $10'}
-                    onBlur={(event) => {
-                      const value = event.target.value.trim();
-                      void saveNotificationTexts({
-                        NEW_MESSAGE: value
-                      });
-                    }}
-                  />
-                </Field>
-                <Field label="GAME_MESSAGE text">
-                  <input
-                    className="field"
-                    defaultValue={notificationSettings?.notificationTexts?.GAME_MESSAGE ?? 'Pay only $5'}
-                    onBlur={(event) => {
-                      const value = event.target.value.trim();
-                      void saveNotificationTexts({
-                        GAME_MESSAGE: value
-                      });
-                    }}
-                  />
-                </Field>
-                <Field label="CALL_INCOMING text">
-                  <input
-                    className="field"
-                    defaultValue={notificationSettings?.notificationTexts?.CALL_INCOMING ?? 'Best coming deal $50'}
-                    onBlur={(event) => {
-                      const value = event.target.value.trim();
-                      void saveNotificationTexts({
-                        CALL_INCOMING: value
-                      });
-                    }}
-                  />
-                </Field>
-                <Field label="Call accept button text">
-                  <input
-                    className="field"
-                    defaultValue={notificationSettings?.callAcceptText ?? 'Pay'}
-                    onBlur={(event) => {
-                      const value = event.target.value.trim();
-                      void saveNotificationTexts({
-                        callAcceptText: value
-                      });
-                    }}
-                  />
-                </Field>
-                <Field label="Call reject button text">
-                  <input
-                    className="field"
-                    defaultValue={notificationSettings?.callRejectText ?? 'Reject'}
-                    onBlur={(event) => {
-                      const value = event.target.value.trim();
-                      void saveNotificationTexts({
-                        callRejectText: value
-                      });
-                    }}
-                  />
-                </Field>
+                <Field
+                  label="NEW_MESSAGE text"
+                  defaultValue={notificationSettings?.notificationTexts?.NEW_MESSAGE ?? 'Best deal $10'}
+                  onBlur={(event) => {
+                    const value = event.target.value.trim();
+                    void saveNotificationTexts({ NEW_MESSAGE: value });
+                  }}
+                />
+                <Field
+                  label="GAME_MESSAGE text"
+                  defaultValue={notificationSettings?.notificationTexts?.GAME_MESSAGE ?? 'Pay only $5'}
+                  onBlur={(event) => {
+                    const value = event.target.value.trim();
+                    void saveNotificationTexts({ GAME_MESSAGE: value });
+                  }}
+                />
+                <Field
+                  label="CALL_INCOMING text"
+                  defaultValue={
+                    notificationSettings?.notificationTexts?.CALL_INCOMING ??
+                    'Best coming deal $50'
+                  }
+                  onBlur={(event) => {
+                    const value = event.target.value.trim();
+                    void saveNotificationTexts({ CALL_INCOMING: value });
+                  }}
+                />
+                <Field
+                  label="Call accept button text"
+                  defaultValue={notificationSettings?.callAcceptText ?? 'Pay'}
+                  onBlur={(event) => {
+                    const value = event.target.value.trim();
+                    void saveNotificationTexts({ callAcceptText: value });
+                  }}
+                />
+                <Field
+                  label="Call reject button text"
+                  defaultValue={notificationSettings?.callRejectText ?? 'Reject'}
+                  onBlur={(event) => {
+                    const value = event.target.value.trim();
+                    void saveNotificationTexts({ callRejectText: value });
+                  }}
+                />
               </div>
             </div>
           </Panel>

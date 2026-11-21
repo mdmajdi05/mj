@@ -29,7 +29,9 @@ export async function getNotificationTexts(): Promise<Record<string, string>> {
     .findUnique({ where: { id: NOTIFICATION_SETTING_ID } })
     .catch(() => null);
   const texts = (row?.notificationTexts ?? null) as Record<string, string> | null;
-  return texts ?? DEFAULT_NOTIFICATION_TEXTS;
+  // Saved copies may only contain the keys the Host edited. Merge the defaults
+  // so every event type always has a usable label.
+  return { ...DEFAULT_NOTIFICATION_TEXTS, ...(texts ?? {}) };
 }
 
 /** The default incoming call button labels. */
