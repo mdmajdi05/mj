@@ -29,6 +29,12 @@ export async function resolveSession(token?: string): Promise<AuthUser | null> {
     }
     return null;
   }
+  // Soft-deleted accounts are parked in the Users recycle bin; their sessions
+  // must not keep working until the Host restores the account.
+  if (session.user.deletedAt) {
+    await prisma.session.delete({ where: { id: session.id } }).catch(() => undefined);
+    return null;
+  }
   return {
     id: session.user.id,
     role: session.user.role,
@@ -57,7 +63,7 @@ export function requireHost(req: AuthRequest, res: Response, next: NextFunction)
 }
 
 export async function isOtherUser(userId: string) {
-  return prisma.user.findFirst({ where: { id: { not: userId } } });
+  return prisma.user.findFirst({ where: { id: { not: userId }, deletedAt: null } });
 }
 
 export function clientSafeUser(user: {

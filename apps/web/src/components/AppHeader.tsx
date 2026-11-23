@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useDuo } from '@/hooks/useDuoApp';
 import { Badge } from '@/components/ui';
+import { NotificationBell } from '@/components/NotificationBell';
 
 /**
  * Minimal, mobile-first header. On the games home it contains only the brand
@@ -70,6 +71,7 @@ export function AppHeader() {
       </button>
 
       <div className="flex items-center gap-2">
+        <NotificationBell />
         <div className="relative" ref={profileRef}>
           <button
             className="btn btn-profile"

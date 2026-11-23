@@ -1446,6 +1446,20 @@ export function useDuoApp() {
       void loadMessages().catch(() => undefined);
     });
 
+    socket.on('contacts:updated', () => {
+      void loadContacts().catch(() => undefined);
+    });
+
+    socket.on('contact:removed', () => {
+      void loadContacts().catch(() => undefined);
+      void loadSummary().catch(() => undefined);
+    });
+
+    socket.on('session:revoked', () => {
+      // Admin password changes and user recycle-bin moves invalidate sessions.
+      void logout();
+    });
+
     socket.on('message:delivered', (payload: { id: string }) => {
       setMessages((current) =>
         current.map((message) =>
@@ -1781,6 +1795,7 @@ export function useDuoApp() {
     loadNotifications,
     loadPermissions,
     lockChatSession,
+    logout,
     playNotificationSound,
     sendOffer,
     setScreen,
@@ -2073,23 +2088,44 @@ export function useDuoApp() {
   );
 
   const deleteMessage = useCallback(
-    async (id: string) => {
-      await api(`/chat/messages/${id}`, { method: 'DELETE' });
+    async (id: string, scope: 'ME' | 'EVERYONE' = 'ME') => {
+      await api(`/chat/messages/${id}?scope=${scope}`, { method: 'DELETE' });
       setMessages((current) => current.filter((message) => message.id !== id));
     },
     []
   );
 
-  const deleteMessages = useCallback(async (ids: string[]) => {
-    if (!ids.length) return 0;
-    const result = await api<{ count: number }>('/chat/messages/delete', {
-      method: 'POST',
-      body: JSON.stringify({ ids })
-    });
-    const hidden = new Set(ids);
-    setMessages((current) => current.filter((message) => !hidden.has(message.id)));
-    return result.count;
-  }, []);
+  const deleteMessages = useCallback(
+    async (
+      ids: string[],
+      options: {
+        scope?: 'ME' | 'EVERYONE';
+        senderScope?: 'MINE' | 'THEIRS' | 'ALL';
+        from?: string;
+        to?: string;
+      } = {}
+    ) => {
+      if (!ids.length && !options.from && !options.to) return 0;
+      const result = await api<{ count: number }>('/chat/messages/delete', {
+        method: 'POST',
+        body: JSON.stringify({
+          ids: ids.length ? ids : undefined,
+          scope: options.scope ?? 'ME',
+          senderScope: options.senderScope,
+          from: options.from,
+          to: options.to
+        })
+      });
+      if (ids.length) {
+        const hidden = new Set(ids);
+        setMessages((current) => current.filter((message) => !hidden.has(message.id)));
+      } else {
+        await loadMessages();
+      }
+      return result.count;
+    },
+    [loadMessages]
+  );
 
   /** Clears this account's view only; the other participant keeps their copy. */
   const deleteAllForMe = useCallback(async () => {
@@ -2105,6 +2141,9 @@ export function useDuoApp() {
       scope: 'ME' | 'BOTH_SIDES';
       senderScope: 'MINE' | 'THEIRS' | 'ALL';
       conversationId?: string;
+      peerId?: string;
+      from?: string;
+      to?: string;
     }) => {
       const result = await api<{ ok: boolean; count: number; ids: string[] }>(
         '/chat/messages/delete-conversation',
@@ -2121,6 +2160,22 @@ export function useDuoApp() {
       return result.count;
     },
     [loadMessages]
+  );
+
+  /** Host-only: hide a chat from the contact list without deleting messages. */
+  const removeChatFromList = useCallback(
+    async (peerId: string) => {
+      await api(`/chat/contacts/${peerId}/remove`, { method: 'POST' });
+      const remaining = await loadContacts();
+      await loadSummary();
+      if (activePeerRef.current === peerId) {
+        const nextId = remaining.find((contact) => contact.id !== peerId)?.id || '';
+        if (nextId) await selectPeer(nextId);
+        else setActivePeerId('');
+        await loadMessages();
+      }
+    },
+    [loadContacts, loadMessages, loadSummary, selectPeer]
   );
 
   const archiveChat = useCallback(async () => {
@@ -2351,6 +2406,7 @@ export function useDuoApp() {
     deleteMessages,
     deleteAllForMe,
     deleteConversation,
+    removeChatFromList,
     clearActivity,
     clearAudit,
     archiveChat,

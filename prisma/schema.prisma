@@ -40,6 +40,9 @@ model User {
   passwordHash       String
   chatUnlocked       Boolean           @default(false)
   lastSeenAt         DateTime?
+  /// Soft-deleted accounts stay in the database so the Host can restore them
+  /// from the Users recycle bin. Sessions are revoked while this is set.
+  deletedAt          DateTime?
   createdAt          DateTime          @default(now())
   updatedAt          DateTime          @updatedAt
   sessions           Session[]
@@ -52,6 +55,7 @@ model User {
   callParticipants   CallParticipant[]
   pushSubscriptions  PushSubscription[]
   messageHides       MessageHide[]
+  @@index([role, deletedAt])
 }
 model Session {
   id        String   @id @default(cuid())
@@ -67,11 +71,15 @@ model Conversation {
   status    ConversationStatus @default(ACTIVE)
   hostId    String?
   guestId   String?
+  /// When the Host removes a chat from their list, this is set and the chat is
+  /// hidden from Host contacts until a new message arrives or it is restored.
+  hostHiddenAt DateTime?
   createdAt DateTime           @default(now())
   updatedAt DateTime           @updatedAt
   messages  Message[]
   @@unique([hostId, guestId])
   @@index([status, updatedAt])
+  @@index([hostId, hostHiddenAt])
 }
 model Message {
   id             String            @id @default(cuid())

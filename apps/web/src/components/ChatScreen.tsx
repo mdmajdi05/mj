@@ -38,10 +38,12 @@ import {
 
 type ConfirmAction =
   | { type: 'archive' }
-  | { type: 'message'; ids: string[] }
-  | { type: 'bulk' }
+  | { type: 'message'; ids: string[]; scope: 'ME' | 'EVERYONE' }
+  | { type: 'bulk'; scope: 'ME' | 'EVERYONE' }
   | { type: 'mine' }
   | null;
+
+type DeleteChatScope = 'ME' | 'BOTH_SIDES' | 'REMOVE_FROM_LIST';
 
 /** Same profile mark used by the Study Assistant header. */
 const ASSISTANT_AVATAR = '✦';
@@ -69,10 +71,13 @@ export function ChatScreen() {
   const [draft, setDraft] = useState('');
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
   const [deleteChatOpen, setDeleteChatOpen] = useState(false);
-  const [deleteChatScope, setDeleteChatScope] = useState<'ME' | 'BOTH_SIDES'>('ME');
+  const [deleteChatPeerId, setDeleteChatPeerId] = useState('');
+  const [deleteChatScope, setDeleteChatScope] = useState<DeleteChatScope>('ME');
   const [deleteChatSenderScope, setDeleteChatSenderScope] = useState<'MINE' | 'THEIRS' | 'ALL'>(
     'ALL'
   );
+  const [deleteChatFrom, setDeleteChatFrom] = useState('');
+  const [deleteChatTo, setDeleteChatTo] = useState('');
   const [toolsOpen, setToolsOpen] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -509,9 +514,11 @@ export function ChatScreen() {
     setBusy(true);
     try {
       if (confirmAction.type === 'archive') await duo.archiveChat();
-      if (confirmAction.type === 'message') await duo.deleteMessages(confirmAction.ids);
+      if (confirmAction.type === 'message') {
+        await duo.deleteMessages(confirmAction.ids, { scope: confirmAction.scope });
+      }
       if (confirmAction.type === 'bulk') {
-        await duo.deleteMessages([...selectedIds]);
+        await duo.deleteMessages([...selectedIds], { scope: confirmAction.scope });
         exitSelectMode();
       }
       if (confirmAction.type === 'mine') {
@@ -526,12 +533,32 @@ export function ChatScreen() {
     }
   }
 
+  function openDeleteChat(peerId?: string, initialScope: DeleteChatScope = 'ME') {
+    setDeleteChatPeerId(peerId || duo.activePeerId || '');
+    setDeleteChatScope(initialScope);
+    setDeleteChatSenderScope('ALL');
+    setDeleteChatFrom('');
+    setDeleteChatTo('');
+    setDeleteChatOpen(true);
+  }
+
   async function runDeleteChat() {
     setBusy(true);
     try {
+      if (deleteChatScope === 'REMOVE_FROM_LIST') {
+        const peerId = deleteChatPeerId || duo.activePeerId;
+        if (!peerId) throw new Error('Choose a chat first.');
+        await duo.removeChatFromList(peerId);
+        setDeleteChatOpen(false);
+        duo.setNotice('Chat removed from your list. It comes back when a new message arrives.');
+        return;
+      }
       const count = await duo.deleteConversation({
         scope: deleteChatScope,
-        senderScope: deleteChatScope === 'BOTH_SIDES' ? deleteChatSenderScope : 'ALL'
+        senderScope: deleteChatScope === 'BOTH_SIDES' ? deleteChatSenderScope : 'ALL',
+        peerId: deleteChatPeerId || undefined,
+        from: deleteChatFrom || undefined,
+        to: deleteChatTo || undefined
       });
       setDeleteChatOpen(false);
       duo.setNotice(
@@ -568,11 +595,18 @@ export function ChatScreen() {
             {duo.contacts.map((contact) => {
               const name = contact.displayName || contact.username;
               return (
-                <button
+                <div
                   key={contact.id}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   className={`chat-contact ${contact.id === duo.activePeerId ? 'is-active' : ''}`}
                   onClick={() => openPeer(contact.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      openPeer(contact.id);
+                    }
+                  }}
                 >
                   <span className="chat-avatar chat-avatar-sm">{name.charAt(0).toUpperCase()}</span>
                   <span className="min-w-0 flex-1 text-left">
@@ -597,7 +631,21 @@ export function ChatScreen() {
                             : 'new conversation'}
                     </span>
                   </span>
-                </button>
+                  {isHost && (
+                    <button
+                      type="button"
+                      className="chat-contact-remove"
+                      aria-label={`Remove ${name} from chat list`}
+                      title="Remove from chat list"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openDeleteChat(contact.id, 'REMOVE_FROM_LIST');
+                      }}
+                    >
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
               );
             })}
             {!duo.contacts.length && (
@@ -694,9 +742,7 @@ export function ChatScreen() {
                             className="nav-item flex w-full items-center gap-2 text-left text-rose-200"
                             onClick={() => {
                               setToolsOpen(false);
-                              setDeleteChatScope('ME');
-                              setDeleteChatSenderScope('ALL');
-                              setDeleteChatOpen(true);
+                              openDeleteChat();
                             }}
                           >
                             <Trash2 size={15} /> Delete chat...
@@ -773,7 +819,8 @@ export function ChatScreen() {
                   onDelete={() =>
                     setConfirmAction({
                       type: 'message',
-                      ids: item.messages.map((message) => message.id)
+                      ids: item.messages.map((message) => message.id),
+                      scope: 'ME'
                     })
                   }
                   onMenu={(x, y) =>
@@ -861,10 +908,20 @@ export function ChatScreen() {
                 variant="danger"
                 className="!px-3 !py-1.5 text-xs"
                 disabled={selectedCount === 0}
-                onClick={() => setConfirmAction({ type: 'bulk' })}
+                onClick={() => setConfirmAction({ type: 'bulk', scope: 'ME' })}
               >
-                <Trash2 size={14} /> Delete
+                <Trash2 size={14} /> Delete for me
               </Button>
+              {isHost && (
+                <Button
+                  variant="danger"
+                  className="!px-3 !py-1.5 text-xs"
+                  disabled={selectedCount === 0}
+                  onClick={() => setConfirmAction({ type: 'bulk', scope: 'EVERYONE' })}
+                >
+                  <Trash2 size={14} /> Delete for everyone
+                </Button>
+              )}
             </div>
           )}
 
@@ -936,17 +993,44 @@ export function ChatScreen() {
                   <Pencil size={15} /> Edit
                 </button>
               )}
-            <button
-              type="button"
-              role="menuitem"
-              className="is-danger"
-              onClick={() => {
-                setConfirmAction({ type: 'message', ids: actionMenu.ids });
-                setActionMenu(null);
-              }}
-            >
-              <Trash2 size={15} /> Delete
-            </button>
+            {isHost ? (
+              <>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="is-danger"
+                  onClick={() => {
+                    setConfirmAction({ type: 'message', ids: actionMenu.ids, scope: 'ME' });
+                    setActionMenu(null);
+                  }}
+                >
+                  <Trash2 size={15} /> Delete for me
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="is-danger"
+                  onClick={() => {
+                    setConfirmAction({ type: 'message', ids: actionMenu.ids, scope: 'EVERYONE' });
+                    setActionMenu(null);
+                  }}
+                >
+                  <Trash2 size={15} /> Delete for everyone
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                role="menuitem"
+                className="is-danger"
+                onClick={() => {
+                  setConfirmAction({ type: 'message', ids: actionMenu.ids, scope: 'ME' });
+                  setActionMenu(null);
+                }}
+              >
+                <Trash2 size={15} /> Delete
+              </button>
+            )}
           </div>
         </>
       )}
@@ -976,9 +1060,12 @@ export function ChatScreen() {
         <p className="muted text-sm leading-6">
           {confirmAction?.type === 'archive'
             ? 'Messages and timestamps are preserved. The conversation is removed from active Chat and can be reopened with RESTORE.'
-            : confirmAction?.type === 'bulk' || confirmAction?.type === 'message'
-              ? 'This is a soft delete from your side only. The other participant keeps their copy. The Host can recover deleted messages from the Admin dashboard.'
-              : 'Your view is cleared, but the other participant keeps the conversation. New messages still arrive normally.'}
+            : (confirmAction?.type === 'bulk' || confirmAction?.type === 'message') &&
+                confirmAction.scope === 'EVERYONE'
+              ? 'Delete for everyone hides this message for both Host and Guest. Both copies go to the Recycle Bin and the Host can restore them from the Admin dashboard.'
+              : confirmAction?.type === 'bulk' || confirmAction?.type === 'message'
+                ? 'This is a soft delete from your side only. The other participant keeps their copy. The Host can recover deleted messages from the Admin dashboard.'
+                : 'Your view is cleared, but the other participant keeps the conversation. New messages still arrive normally.'}
         </p>
         <div className="mt-5 flex justify-end gap-2">
           <Button onClick={() => setConfirmAction(null)}>Cancel</Button>
@@ -990,12 +1077,16 @@ export function ChatScreen() {
             {busy
               ? 'Working…'
               : confirmAction?.type === 'bulk'
-                ? 'Delete selected'
-                : confirmAction?.type === 'mine'
-                  ? 'Clear my chat'
-                  : confirmAction?.type === 'archive'
-                    ? 'Archive'
-                    : 'Delete'}
+                ? confirmAction.scope === 'EVERYONE'
+                  ? 'Delete selected for everyone'
+                  : 'Delete selected for me'
+                : confirmAction?.type === 'message' && confirmAction.scope === 'EVERYONE'
+                  ? 'Delete for everyone'
+                  : confirmAction?.type === 'mine'
+                    ? 'Clear my chat'
+                    : confirmAction?.type === 'archive'
+                      ? 'Archive'
+                      : 'Delete for me'}
           </Button>
         </div>
       </Modal>
@@ -1048,7 +1139,58 @@ export function ChatScreen() {
               <span className="muted block text-xs">Both Host and Guest copies are soft deleted to Recycle Bin.</span>
             </span>
           </button>
+          {isHost && (
+            <button
+              type="button"
+              className={`flex w-full items-start gap-3 rounded-xl border p-3 text-left ${
+                deleteChatScope === 'REMOVE_FROM_LIST'
+                  ? 'border-fuchsia-400/40 bg-fuchsia-500/10'
+                  : 'border-white/10 bg-black/15'
+              }`}
+              onClick={() => setDeleteChatScope('REMOVE_FROM_LIST')}
+            >
+              <span className="mt-0.5 h-4 w-4 rounded-full border border-white/40">
+                {deleteChatScope === 'REMOVE_FROM_LIST' && (
+                  <span className="block h-full w-full rounded-full bg-fuchsia-400" />
+                )}
+              </span>
+              <span>
+                <span className="block text-sm font-medium">Remove from chat list</span>
+                <span className="muted block text-xs">
+                  Hide this chat from your list only. No message is deleted, and the chat returns
+                  when a new message arrives.
+                </span>
+              </span>
+            </button>
+          )}
         </div>
+
+        {deleteChatScope !== 'REMOVE_FROM_LIST' && (
+          <div className="mt-4 grid gap-2 rounded-xl border border-white/10 bg-black/15 p-3 sm:grid-cols-2">
+            <label className="block text-xs">
+              <span className="field-label">From date</span>
+              <input
+                type="date"
+                className="field"
+                value={deleteChatFrom}
+                onChange={(event) => setDeleteChatFrom(event.target.value)}
+              />
+            </label>
+            <label className="block text-xs">
+              <span className="field-label">To date</span>
+              <input
+                type="date"
+                className="field"
+                value={deleteChatTo}
+                onChange={(event) => setDeleteChatTo(event.target.value)}
+              />
+            </label>
+            <p className="muted text-[11px] leading-5 sm:col-span-2">
+              Leave both dates empty to delete the whole chat. Set one or both dates to delete only
+              messages from that period.
+            </p>
+          </div>
+        )}
 
         {deleteChatScope === 'BOTH_SIDES' && (
           <div className="mt-4 rounded-xl border border-white/10 bg-black/15 p-3">
@@ -1077,7 +1219,11 @@ export function ChatScreen() {
         <div className="mt-5 flex justify-end gap-2">
           <Button onClick={() => setDeleteChatOpen(false)}>Cancel</Button>
           <Button variant="danger" onClick={() => void runDeleteChat()} disabled={busy}>
-            {busy ? 'Deleting…' : 'Delete chat'}
+            {busy
+              ? 'Working…'
+              : deleteChatScope === 'REMOVE_FROM_LIST'
+                ? 'Remove from list'
+                : 'Delete chat'}
           </Button>
         </div>
       </Modal>

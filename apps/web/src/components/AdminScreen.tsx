@@ -10,6 +10,7 @@ import {
   BellOff,
   BookOpen,
   Check,
+  ChevronDown,
   Gamepad2,
   History,
   ListChecks,
@@ -24,6 +25,7 @@ import {
   Shield,
   Ticket,
   Trash2,
+  Users,
   X
 } from 'lucide-react';
 import { api } from '@/lib/api';
@@ -55,10 +57,24 @@ type AdminUser = {
   displayName?: string | null;
   role: 'HOST' | 'GUEST';
   lastSeenAt?: string | null;
+  createdAt?: string;
+  deletedAt?: string | null;
   chatNotifications: boolean;
   adminPushNotifications: boolean;
   adminButterflyNotifications: boolean;
   adminSoundNotifications: boolean;
+};
+
+type AdminDeletedUser = {
+  id: string;
+  username: string;
+  displayName?: string | null;
+  role: 'HOST' | 'GUEST';
+  lastSeenAt?: string | null;
+  deletedAt?: string | null;
+  createdAt?: string;
+  conversations: number;
+  messages: number;
 };
 type NotificationFeatureState = {
   enabled: boolean;
@@ -72,6 +88,7 @@ type Tab =
   | 'overview'
   | 'chat'
   | 'deleted'
+  | 'users'
   | 'features'
   | 'study'
   | 'game'
@@ -83,6 +100,7 @@ const tabs: Array<{ id: Tab; label: string; icon: React.ReactNode }> = [
   { id: 'overview', label: 'Overview', icon: <Activity size={15} /> },
   { id: 'chat', label: 'Message delete', icon: <MessageCircle size={15} /> },
   { id: 'deleted', label: 'Recycle Bin', icon: <RotateCcw size={15} /> },
+  { id: 'users', label: 'Users', icon: <Users size={15} /> },
   { id: 'features', label: 'User features', icon: <Bell size={15} /> },
   { id: 'study', label: 'Study assistance', icon: <BookOpen size={15} /> },
   { id: 'game', label: 'Game messages', icon: <Gamepad2 size={15} /> },
@@ -90,6 +108,41 @@ const tabs: Array<{ id: Tab; label: string; icon: React.ReactNode }> = [
   { id: 'promo', label: 'Promo code', icon: <Ticket size={15} /> },
   { id: 'activity', label: 'Activity & audit', icon: <History size={15} /> }
 ];
+
+function CollapsibleSection({
+  title,
+  description,
+  defaultOpen = false,
+  className,
+  children
+}: {
+  title: string;
+  description?: string;
+  defaultOpen?: boolean;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className={`rounded-xl border border-white/10 bg-black/15 ${className || ''}`.trim()}>
+      <button
+        type="button"
+        className="flex w-full items-center justify-between gap-3 p-3 text-left"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <div className="min-w-0">
+          <p className="text-sm font-medium">{title}</p>
+          {description && <p className="muted mt-0.5 text-xs leading-5">{description}</p>}
+        </div>
+        <ChevronDown
+          size={16}
+          className={`shrink-0 text-white/60 transition-transform ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+      {open && <div className="border-t border-white/10 p-3">{children}</div>}
+    </div>
+  );
+}
 
 export function AdminScreen() {
   const duo = useDuo();
@@ -116,7 +169,22 @@ export function AdminScreen() {
   const [deleteFor, setDeleteFor] = useState<'BOTH' | 'HOST' | 'GUEST'>('BOTH');
   const [deleteAllOpen, setDeleteAllOpen] = useState(false);
   const [deleteConfirmIds, setDeleteConfirmIds] = useState<string[] | null>(null);
-  const [deleteUserTarget, setDeleteUserTarget] = useState<AdminUser | null>(null);
+  const [deleteUserTarget, setDeleteUserTarget] = useState<{
+    id: string;
+    username: string;
+    displayName?: string | null;
+    deletedAt?: string | null;
+  } | null>(null);
+  const [deletedUsers, setDeletedUsers] = useState<AdminDeletedUser[]>([]);
+  const [passwordTarget, setPasswordTarget] = useState<AdminUser | null>(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [deleteAllFrom, setDeleteAllFrom] = useState('');
+  const [deleteAllTo, setDeleteAllTo] = useState('');
+  const [deletedConversationFilter, setDeletedConversationFilter] = useState('');
+  const [deletedFrom, setDeletedFrom] = useState('');
+  const [deletedTo, setDeletedTo] = useState('');
+  const [deletedSelectMode, setDeletedSelectMode] = useState(false);
+  const [selectedDeletedIds, setSelectedDeletedIds] = useState<Set<string>>(new Set());
 
   const deleteForLabel =
     deleteFor === 'BOTH' ? 'Both members' : deleteFor === 'HOST' ? 'Host only' : 'Guest only';
@@ -135,7 +203,8 @@ export function AdminScreen() {
       gameResult,
       promoResult,
       conversationsResult,
-      notificationResult
+      notificationResult,
+      deletedUsersResult
     ] = await Promise.allSettled([
       api<AdminActivity>('/chat/admin/activity'),
       api<AdminMessage[]>(`/chat/admin/messages${queryString ? `?${queryString}` : ''}`),
@@ -144,7 +213,8 @@ export function AdminScreen() {
       api<GameMessage[]>('/chat/admin/game-messages'),
       api<any>('/chat/admin/promo/status'),
       api<AdminConversation[]>('/chat/admin/conversations'),
-      api<NotificationFeatureState>('/chat/admin/notification-settings')
+      api<NotificationFeatureState>('/chat/admin/notification-settings'),
+      api<AdminDeletedUser[]>('/chat/admin/users/deleted')
     ]);
     if (activityResult.status === 'fulfilled') setActivity(activityResult.value);
     if (messagesResult.status === 'fulfilled') setMessages(messagesResult.value);
@@ -158,6 +228,7 @@ export function AdminScreen() {
       setActiveConversationId((current) => current || next[0]?.id || '');
     }
     if (notificationResult.status === 'fulfilled') setNotificationSettings(notificationResult.value);
+    if (deletedUsersResult.status === 'fulfilled') setDeletedUsers(deletedUsersResult.value);
     setLoading(false);
   }, []);
 
@@ -263,11 +334,15 @@ export function AdminScreen() {
           method: 'POST',
           body: JSON.stringify({
             conversationId: activeConversationId,
-            deleteFor: deleteForPayload()
+            deleteFor: deleteForPayload(),
+            from: deleteAllFrom || undefined,
+            to: deleteAllTo || undefined
           })
         }
       );
       setDeleteAllOpen(false);
+      setDeleteAllFrom('');
+      setDeleteAllTo('');
       await refresh(search, activeConversationId);
       duo.setNotice(
         `Soft deleted ${result.count} message${result.count === 1 ? '' : 's'} of this chat. Open the Recycle Bin to restore or permanently delete them.`
@@ -279,15 +354,18 @@ export function AdminScreen() {
     }
   }
 
-  async function deleteGuestUser() {
-    if (!deleteUserTarget) return;
-    setBusy(`delete-user-${deleteUserTarget.id}`);
+  async function permanentDeleteUser(user: {
+    id: string;
+    username: string;
+    displayName?: string | null;
+  }) {
+    setBusy(`delete-user-${user.id}`);
     try {
       const result = await api<{
         ok: boolean;
         deleted: { conversations: number; messages: number; gameMessages: number };
-      }>(`/chat/admin/users/${deleteUserTarget.id}`, { method: 'DELETE' });
-      const deletedName = deleteUserTarget.displayName || deleteUserTarget.username;
+      }>(`/chat/admin/users/${user.id}`, { method: 'DELETE' });
+      const deletedName = user.displayName || user.username;
       setDeleteUserTarget(null);
       setActiveConversationId('');
       await refresh(search);
@@ -296,10 +374,78 @@ export function AdminScreen() {
         `${deletedName} deleted permanently. Removed ${result.deleted.messages} chat message(s), ${result.deleted.conversations} conversation(s), and ${result.deleted.gameMessages} game message(s).`
       );
     } catch (cause) {
-      duo.setError(cause instanceof Error ? cause.message : 'Guest could not be deleted');
+      duo.setError(cause instanceof Error ? cause.message : 'User could not be deleted');
     } finally {
       setBusy('');
     }
+  }
+
+  async function deleteGuestUser() {
+    if (deleteUserTarget) await permanentDeleteUser(deleteUserTarget);
+  }
+
+  async function softDeleteUser(user: { id: string; username: string; displayName?: string | null }) {
+    setBusy(`soft-delete-user-${user.id}`);
+    try {
+      await api(`/chat/admin/users/${user.id}/soft-delete`, { method: 'POST' });
+      setDeleteUserTarget(null);
+      await refresh(search);
+      await Promise.allSettled([duo.loadContacts(), duo.loadSummary()]);
+      duo.setNotice(
+        `${user.displayName || user.username} moved to the Users recycle bin. All messages are kept and can be restored.`
+      );
+    } catch (cause) {
+      duo.setError(cause instanceof Error ? cause.message : 'User could not be moved to the recycle bin');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function restoreUser(user: { id: string; username: string; displayName?: string | null }) {
+    setBusy(`restore-user-${user.id}`);
+    try {
+      await api(`/chat/admin/users/${user.id}/restore`, { method: 'POST' });
+      await refresh(search);
+      await Promise.allSettled([duo.loadContacts(), duo.loadSummary()]);
+      duo.setNotice(`${user.displayName || user.username} restored.`);
+    } catch (cause) {
+      duo.setError(cause instanceof Error ? cause.message : 'User could not be restored');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function changeUserPassword() {
+    if (!passwordTarget) return;
+    if (newPassword.trim().length < 6) {
+      duo.setError('Use at least 6 characters for the new password.');
+      return;
+    }
+    setBusy(`password-${passwordTarget.id}`);
+    try {
+      await api(`/chat/admin/users/${passwordTarget.id}/password`, {
+        method: 'POST',
+        body: JSON.stringify({ newPassword: newPassword.trim() })
+      });
+      duo.setNotice(
+        `Password changed for ${passwordTarget.displayName || passwordTarget.username}. Their sessions were signed out.`
+      );
+      setPasswordTarget(null);
+      setNewPassword('');
+    } catch (cause) {
+      duo.setError(cause instanceof Error ? cause.message : 'Password could not be changed');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  function toggleDeletedSelected(id: string) {
+    setSelectedDeletedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
   function toggleAdminSelected(id: string) {
@@ -314,21 +460,27 @@ export function AdminScreen() {
   const [recoverPrompt, setRecoverPrompt] = useState<{
     ids?: string[];
     role?: 'HOST' | 'GUEST';
+    conversationId?: string;
+    from?: string;
+    to?: string;
     label: string;
   } | null>(null);
 
   async function recoverDeleted(
     ids: string[] | undefined,
     role: 'HOST' | 'GUEST' | undefined,
-    recoverFor: Array<'HOST' | 'GUEST'>
+    recoverFor: Array<'HOST' | 'GUEST'>,
+    filters?: { conversationId?: string; from?: string; to?: string }
   ) {
     setBusy('recover');
     try {
       await api('/chat/admin/deleted-messages/recover', {
         method: 'POST',
-        body: JSON.stringify({ ids, role, recoverFor })
+        body: JSON.stringify({ ids, role, recoverFor, ...filters })
       });
       setRecoverPrompt(null);
+      setSelectedDeletedIds(new Set());
+      setDeletedSelectMode(false);
       await refresh(search, activeConversationId || undefined);
       duo.setNotice(
         `Recovered for ${recoverFor.length === 2 ? 'Host and Guest' : recoverFor[0] === 'HOST' ? 'Host' : 'Guest'}.`
@@ -340,7 +492,11 @@ export function AdminScreen() {
     }
   }
 
-  async function purgeDeleted(ids?: string[], role?: 'HOST' | 'GUEST') {
+  async function purgeDeleted(
+    ids?: string[],
+    role?: 'HOST' | 'GUEST',
+    filters?: { conversationId?: string; from?: string; to?: string }
+  ) {
     if (
       !window.confirm(
         'Permanently delete these messages? This cannot be undone and the other side loses their copy too.'
@@ -352,8 +508,10 @@ export function AdminScreen() {
     try {
       await api('/chat/admin/deleted-messages', {
         method: 'DELETE',
-        body: JSON.stringify({ ids, role })
+        body: JSON.stringify({ ids, role, ...filters })
       });
+      setSelectedDeletedIds(new Set());
+      setDeletedSelectMode(false);
       await refresh(search);
     } catch (cause) {
       duo.setError(cause instanceof Error ? cause.message : 'Delete failed');
@@ -467,17 +625,25 @@ export function AdminScreen() {
     }
   }
 
-  const visibleDeleted = useMemo(
-    () =>
-      deletedMessages.filter((message) => {
-        if (!deletedRole) return true;
-        return (
-          message.sender?.role === deletedRole ||
-          Boolean(message.hides?.some((hide) => hide.user?.role === deletedRole))
-        );
-      }),
-    [deletedMessages, deletedRole]
-  );
+  const visibleDeleted = useMemo(() => {
+    const fromTime = deletedFrom ? Date.parse(`${deletedFrom}T00:00:00`) : null;
+    const toTime = deletedTo ? Date.parse(`${deletedTo}T23:59:59.999`) : null;
+    return deletedMessages.filter((message) => {
+      if (deletedConversationFilter && message.conversation?.id !== deletedConversationFilter) {
+        return false;
+      }
+      if (fromTime !== null || toTime !== null) {
+        const time = Date.parse(message.createdAt);
+        if (fromTime !== null && time < fromTime) return false;
+        if (toTime !== null && time > toTime) return false;
+      }
+      if (!deletedRole) return true;
+      return (
+        message.sender?.role === deletedRole ||
+        Boolean(message.hides?.some((hide) => hide.user?.role === deletedRole))
+      );
+    });
+  }, [deletedMessages, deletedConversationFilter, deletedFrom, deletedRole, deletedTo]);
 
   /** Recycle Bin entries grouped chat-wise so restore/purge can act per conversation. */
   const deletedGroups = useMemo(() => {
@@ -989,46 +1155,160 @@ export function AdminScreen() {
 
       {tab === 'deleted' && (
         <Panel className="p-5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <p className="eyebrow">Soft-deleted store</p>
               <h3 className="mt-1 text-lg font-semibold">Recycle Bin</h3>
-              <p className="muted mt-1 text-xs">
-                Admin deletes are soft deletes. Restore a chat to bring the copies back, or delete
-                forever to remove them permanently.
+              <p className="muted mt-1 max-w-2xl text-xs leading-5">
+                Pick a chat like Message delete, filter by user or date, then restore or delete
+                forever. Restore asks which side gets the messages back.
               </p>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <Badge tone={visibleDeleted.length ? 'accent' : 'neutral'}>
+              {visibleDeleted.length} message{visibleDeleted.length === 1 ? '' : 's'}
+            </Badge>
+          </div>
+
+          <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <label className="block text-xs">
+              <span className="field-label">Chat</span>
               <select
-                className="field w-32"
+                className="field"
+                value={deletedConversationFilter}
+                onChange={(event) => {
+                  setDeletedConversationFilter(event.target.value);
+                  setSelectedDeletedIds(new Set());
+                }}
+              >
+                <option value="">All chats</option>
+                {conversations.map((conversation) => (
+                  <option key={conversation.id} value={conversation.id}>
+                    {conversation.hostName} ↔ {conversation.guestName}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block text-xs">
+              <span className="field-label">User</span>
+              <select
+                className="field"
                 value={deletedRole}
-                onChange={(event) =>
-                  setDeletedRole(event.target.value as '' | 'HOST' | 'GUEST')
-                }
+                onChange={(event) => {
+                  setDeletedRole(event.target.value as '' | 'HOST' | 'GUEST');
+                  setSelectedDeletedIds(new Set());
+                }}
               >
                 <option value="">All users</option>
                 <option value="HOST">Host</option>
                 <option value="GUEST">User</option>
               </select>
-              <Button
-                onClick={() =>
-                  setRecoverPrompt({
-                    role: deletedRole || undefined,
-                    label: deletedRole ? `${deletedRole.toLowerCase()} messages` : 'all deleted messages'
-                  })
-                }
-                disabled={busy === 'recover' || visibleDeleted.length === 0}
-              >
-                <RotateCcw size={14} /> Recover {deletedRole ? deletedRole.toLowerCase() : 'all'}
-              </Button>
-              <Button
-                variant="danger"
-                onClick={() => void purgeDeleted(undefined, deletedRole || undefined)}
-                disabled={busy === 'purge' || visibleDeleted.length === 0}
-              >
-                <Trash2 size={14} /> Delete forever
-              </Button>
-            </div>
+            </label>
+            <label className="block text-xs">
+              <span className="field-label">From date</span>
+              <input
+                type="date"
+                className="field"
+                value={deletedFrom}
+                onChange={(event) => {
+                  setDeletedFrom(event.target.value);
+                  setSelectedDeletedIds(new Set());
+                }}
+              />
+            </label>
+            <label className="block text-xs">
+              <span className="field-label">To date</span>
+              <input
+                type="date"
+                className="field"
+                value={deletedTo}
+                onChange={(event) => {
+                  setDeletedTo(event.target.value);
+                  setSelectedDeletedIds(new Set());
+                }}
+              />
+            </label>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button
+              variant={deletedSelectMode ? 'primary' : 'ghost'}
+              onClick={() => {
+                setDeletedSelectMode((value) => !value);
+                setSelectedDeletedIds(new Set());
+              }}
+            >
+              <ListChecks size={15} />
+              {deletedSelectMode ? 'Done selecting' : 'Select messages'}
+            </Button>
+            {deletedSelectMode && (
+              <>
+                <Button
+                  onClick={() =>
+                    setSelectedDeletedIds(
+                      selectedDeletedIds.size === visibleDeleted.length
+                        ? new Set()
+                        : new Set(visibleDeleted.map((message) => message.id))
+                    )
+                  }
+                >
+                  {selectedDeletedIds.size === visibleDeleted.length && visibleDeleted.length > 0
+                    ? 'Clear all'
+                    : 'Select all'}
+                </Button>
+                <span className="muted text-xs">{selectedDeletedIds.size} selected</span>
+                <Button
+                  variant="primary"
+                  disabled={!selectedDeletedIds.size || busy === 'recover'}
+                  onClick={() =>
+                    setRecoverPrompt({
+                      ids: [...selectedDeletedIds],
+                      label: `${selectedDeletedIds.size} selected message(s)`
+                    })
+                  }
+                >
+                  <RotateCcw size={14} /> Recover selected
+                </Button>
+                <Button
+                  variant="danger"
+                  disabled={!selectedDeletedIds.size || busy === 'purge'}
+                  onClick={() => void purgeDeleted([...selectedDeletedIds])}
+                >
+                  <Trash2 size={14} /> Delete selected
+                </Button>
+              </>
+            )}
+            <Button
+              variant="primary"
+              onClick={() =>
+                setRecoverPrompt({
+                  role: deletedRole || undefined,
+                  conversationId: deletedConversationFilter || undefined,
+                  from: deletedFrom || undefined,
+                  to: deletedTo || undefined,
+                  label: deletedConversationFilter
+                    ? `messages in ${conversationTitle(deletedConversationFilter)}`
+                    : deletedRole
+                      ? `${deletedRole.toLowerCase()} messages`
+                      : 'all deleted messages'
+                })
+              }
+              disabled={busy === 'recover' || visibleDeleted.length === 0}
+            >
+              <RotateCcw size={14} /> Recover filtered
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() =>
+                void purgeDeleted(undefined, deletedRole || undefined, {
+                  conversationId: deletedConversationFilter || undefined,
+                  from: deletedFrom || undefined,
+                  to: deletedTo || undefined
+                })
+              }
+              disabled={busy === 'purge' || visibleDeleted.length === 0}
+            >
+              <Trash2 size={14} /> Delete filtered forever
+            </Button>
           </div>
 
           <div className="mt-4 space-y-3">
@@ -1038,7 +1318,12 @@ export function AdminScreen() {
                 className="rounded-2xl border border-white/5 bg-black/15 p-3"
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-sm font-medium">{conversationTitle(group.conversationId)}</p>
+                  <p className="text-sm font-medium">
+                    {conversationTitle(group.conversationId)}
+                    <span className="muted ml-2 text-[11px]">
+                      {group.messages.length} deleted
+                    </span>
+                  </p>
                   <div className="flex shrink-0 gap-2">
                     <Button
                       className="!px-2.5 !py-1.5 text-xs"
@@ -1063,60 +1348,71 @@ export function AdminScreen() {
                   </div>
                 </div>
                 <div className="mt-2 space-y-2">
-                {group.messages.map((message) => (
-              <div
-                key={message.id}
-                className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-white/5 bg-black/15 p-3"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge tone="accent">{message.sender?.username || message.senderId}</Badge>
-                    <Badge tone={message.sender?.role === 'HOST' ? 'good' : 'neutral'}>
-                      {message.sender?.role || 'USER'}
-                    </Badge>
-                    <span className="muted text-[11px]">{formatDateTime(message.createdAt)}</span>
-                    {message.hides?.length ? (
-                      <span className="muted text-[11px]">
-                        hidden for{' '}
-                        {message.hides
-                          .map((hide) => hide.user?.username || 'account')
-                          .join(', ')}
-                      </span>
-                    ) : null}
-                  </div>
-                  <p className="mt-1 break-words text-sm leading-6">
-                    {message.content ||
-                      (message.attachmentKind === 'IMAGE'
-                        ? '📷 Photo'
-                        : message.attachmentKind === 'VIDEO'
-                          ? '🎬 Video'
-                          : message.attachmentKind === 'AUDIO'
-                            ? '🎙️ Voice message'
-                            : message.attachmentName
-                              ? `📎 ${message.attachmentName}`
-                              : 'Attachment')}
-                  </p>
-                </div>
-                <div className="flex shrink-0 gap-2">
-                  <Button
-                    className="!px-2.5 !py-1.5 text-xs"
-                    onClick={() =>
-                      setRecoverPrompt({ ids: [message.id], label: 'this message' })
-                    }
-                    disabled={busy === 'recover'}
-                  >
-                    <RotateCcw size={13} /> Recover
-                  </Button>
-                  <Button
-                    variant="danger"
-                    className="!px-2.5 !py-1.5 text-xs"
-                    onClick={() => void purgeDeleted([message.id])}
-                    disabled={busy === 'purge'}
-                  >
-                    <Trash2 size={13} />
-                  </Button>
-                </div>
-              </div>
+                  {group.messages.map((message) => (
+                    <div
+                      key={message.id}
+                      className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-white/5 bg-black/15 p-3"
+                    >
+                      {deletedSelectMode && (
+                        <input
+                          type="checkbox"
+                          checked={selectedDeletedIds.has(message.id)}
+                          onChange={() => toggleDeletedSelected(message.id)}
+                          className="mt-1 h-4 w-4 shrink-0 accent-fuchsia-400"
+                          aria-label="Select deleted message"
+                        />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge tone="accent">{message.sender?.username || message.senderId}</Badge>
+                          <Badge tone={message.sender?.role === 'HOST' ? 'good' : 'neutral'}>
+                            {message.sender?.role || 'USER'}
+                          </Badge>
+                          <span className="muted text-[11px]">
+                            {formatDateTime(message.createdAt)}
+                          </span>
+                          {message.hides?.length ? (
+                            <span className="muted text-[11px]">
+                              hidden for{' '}
+                              {message.hides
+                                .map((hide) => hide.user?.username || 'account')
+                                .join(', ')}
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="mt-1 break-words text-sm leading-6">
+                          {message.content ||
+                            (message.attachmentKind === 'IMAGE'
+                              ? '📷 Photo'
+                              : message.attachmentKind === 'VIDEO'
+                                ? '🎬 Video'
+                                : message.attachmentKind === 'AUDIO'
+                                  ? '🎙️ Voice message'
+                                  : message.attachmentName
+                                    ? `📎 ${message.attachmentName}`
+                                    : 'Attachment')}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 gap-2">
+                        <Button
+                          className="!px-2.5 !py-1.5 text-xs"
+                          onClick={() =>
+                            setRecoverPrompt({ ids: [message.id], label: 'this message' })
+                          }
+                          disabled={busy === 'recover'}
+                        >
+                          <RotateCcw size={13} /> Recover
+                        </Button>
+                        <Button
+                          variant="danger"
+                          className="!px-2.5 !py-1.5 text-xs"
+                          onClick={() => void purgeDeleted([message.id])}
+                          disabled={busy === 'purge'}
+                        >
+                          <Trash2 size={13} />
+                        </Button>
+                      </div>
+                    </div>
                   ))}
                 </div>
               </div>
@@ -1130,6 +1426,131 @@ export function AdminScreen() {
             )}
           </div>
         </Panel>
+      )}
+
+      {tab === 'users' && (
+        <div className="grid gap-4">
+          <Panel className="p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="eyebrow">Accounts</p>
+                <h3 className="mt-1 text-lg font-semibold">Users</h3>
+                <p className="muted mt-1 max-w-2xl text-xs leading-5">
+                  Manage account passwords and remove users. Deleting a user asks for confirmation
+                  and lets you choose the Users recycle bin or permanent deletion.
+                </p>
+              </div>
+              <Badge tone="neutral">
+                {adminUsers.filter((user) => !user.deletedAt).length} active
+              </Badge>
+            </div>
+
+            <div className="mt-4 space-y-2">
+              {adminUsers
+                .filter((user) => !user.deletedAt)
+                .sort((a, b) => (a.role === b.role ? 0 : a.role === 'HOST' ? -1 : 1))
+                .map((user) => (
+                  <div
+                    key={user.id}
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/5 bg-black/15 p-3"
+                  >
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="chat-avatar chat-avatar-sm">
+                        {(user.displayName || user.username).charAt(0).toUpperCase()}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium">
+                          {user.displayName || user.username}
+                          {user.id === duo.user?.id ? ' (you)' : ''}
+                        </p>
+                        <p className="muted text-[11px]">
+                          @{user.username} · {user.role === 'HOST' ? 'Host / Admin' : 'Guest'}
+                          {user.lastSeenAt ? ` · ${formatDateTime(user.lastSeenAt)}` : ''}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        onClick={() => {
+                          setPasswordTarget(user);
+                          setNewPassword('');
+                        }}
+                      >
+                        <Pencil size={14} /> Change password
+                      </Button>
+                      {user.role === 'GUEST' && (
+                        <Button variant="danger" onClick={() => setDeleteUserTarget(user)}>
+                          <Trash2 size={14} /> Delete user
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              {!adminUsers.filter((user) => !user.deletedAt).length && (
+                <p className="muted text-sm">No active accounts found.</p>
+              )}
+            </div>
+          </Panel>
+
+          <Panel className="p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="eyebrow">Users recycle bin</p>
+                <h3 className="mt-1 text-lg font-semibold">Deleted users</h3>
+                <p className="muted mt-1 max-w-2xl text-xs leading-5">
+                  Soft-deleted accounts cannot log in and are hidden from contacts. Their chats and
+                  messages stay in the database until you restore them or delete forever.
+                </p>
+              </div>
+              <Badge tone={deletedUsers.length ? 'warn' : 'neutral'}>
+                {deletedUsers.length} deleted
+              </Badge>
+            </div>
+
+            <div className="mt-4 space-y-2">
+              {deletedUsers.map((user) => (
+                <div
+                  key={user.id}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/5 bg-black/15 p-3"
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="chat-avatar chat-avatar-sm opacity-60">
+                      {(user.displayName || user.username).charAt(0).toUpperCase()}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">
+                        {user.displayName || user.username}
+                      </p>
+                      <p className="muted text-[11px]">
+                        @{user.username} · deleted {user.deletedAt ? formatDateTime(user.deletedAt) : 'recently'}
+                        {' · '}
+                        {user.conversations} chat(s), {user.messages} message(s)
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      onClick={() => void restoreUser(user)}
+                      disabled={busy === `restore-user-${user.id}`}
+                    >
+                      <ArchiveRestore size={14} /> Restore
+                    </Button>
+                    <Button
+                      variant="danger"
+                      onClick={() => setDeleteUserTarget(user)}
+                      disabled={busy === `delete-user-${user.id}`}
+                    >
+                      <Trash2 size={14} /> Delete forever
+                    </Button>
+                  </div>
+                </div>
+              ))}
+              {!deletedUsers.length && (
+                <p className="muted text-sm">No deleted users. Accounts you move to the recycle bin appear here.</p>
+              )}
+            </div>
+          </Panel>
+        </div>
       )}
 
       {tab === 'features' && (
@@ -1181,57 +1602,58 @@ export function AdminScreen() {
               )}
             </div>
 
-            <div className="mt-4 rounded-xl border border-white/10 bg-black/15 p-3">
-              <p className="text-sm font-medium">Notification copy</p>
-              <p className="muted mt-1 text-xs leading-5">
-                Edit the push notification texts and the incoming call button labels. The same
-                copy is used for the background push and the in-app butterflies.
-              </p>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                <Field
-                  label="NEW_MESSAGE text"
-                  defaultValue={notificationSettings?.notificationTexts?.NEW_MESSAGE ?? 'Best deal $10'}
-                  onBlur={(event) => {
-                    const value = event.target.value.trim();
-                    void saveNotificationTexts({ NEW_MESSAGE: value });
-                  }}
-                />
-                <Field
-                  label="GAME_MESSAGE text"
-                  defaultValue={notificationSettings?.notificationTexts?.GAME_MESSAGE ?? 'Pay only $5'}
-                  onBlur={(event) => {
-                    const value = event.target.value.trim();
-                    void saveNotificationTexts({ GAME_MESSAGE: value });
-                  }}
-                />
-                <Field
-                  label="CALL_INCOMING text"
-                  defaultValue={
-                    notificationSettings?.notificationTexts?.CALL_INCOMING ??
-                    'Best coming deal $50'
-                  }
-                  onBlur={(event) => {
-                    const value = event.target.value.trim();
-                    void saveNotificationTexts({ CALL_INCOMING: value });
-                  }}
-                />
-                <Field
-                  label="Call accept button text"
-                  defaultValue={notificationSettings?.callAcceptText ?? 'Pay'}
-                  onBlur={(event) => {
-                    const value = event.target.value.trim();
-                    void saveNotificationTexts({ callAcceptText: value });
-                  }}
-                />
-                <Field
-                  label="Call reject button text"
-                  defaultValue={notificationSettings?.callRejectText ?? 'Reject'}
-                  onBlur={(event) => {
-                    const value = event.target.value.trim();
-                    void saveNotificationTexts({ callRejectText: value });
-                  }}
-                />
-              </div>
+            <div className="mt-4">
+              <CollapsibleSection
+                title="Notification copy"
+                description="Edit push notification texts and incoming call button labels."
+                defaultOpen={false}
+              >
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Field
+                    label="NEW_MESSAGE text"
+                    defaultValue={notificationSettings?.notificationTexts?.NEW_MESSAGE ?? 'Best deal $10'}
+                    onBlur={(event) => {
+                      const value = event.target.value.trim();
+                      void saveNotificationTexts({ NEW_MESSAGE: value });
+                    }}
+                  />
+                  <Field
+                    label="GAME_MESSAGE text"
+                    defaultValue={notificationSettings?.notificationTexts?.GAME_MESSAGE ?? 'Pay only $5'}
+                    onBlur={(event) => {
+                      const value = event.target.value.trim();
+                      void saveNotificationTexts({ GAME_MESSAGE: value });
+                    }}
+                  />
+                  <Field
+                    label="CALL_INCOMING text"
+                    defaultValue={
+                      notificationSettings?.notificationTexts?.CALL_INCOMING ??
+                      'Best coming deal $50'
+                    }
+                    onBlur={(event) => {
+                      const value = event.target.value.trim();
+                      void saveNotificationTexts({ CALL_INCOMING: value });
+                    }}
+                  />
+                  <Field
+                    label="Call accept button text"
+                    defaultValue={notificationSettings?.callAcceptText ?? 'Pay'}
+                    onBlur={(event) => {
+                      const value = event.target.value.trim();
+                      void saveNotificationTexts({ callAcceptText: value });
+                    }}
+                  />
+                  <Field
+                    label="Call reject button text"
+                    defaultValue={notificationSettings?.callRejectText ?? 'Reject'}
+                    onBlur={(event) => {
+                      const value = event.target.value.trim();
+                      void saveNotificationTexts({ callRejectText: value });
+                    }}
+                  />
+                </div>
+              </CollapsibleSection>
             </div>
           </Panel>
 
@@ -1247,8 +1669,16 @@ export function AdminScreen() {
                 hidden. This works only when the master switch above is on.
               </p>
             </div>
-            <div className="mt-4 space-y-2">
+            <div className="mt-4">
+              <CollapsibleSection
+                title="Per-user notification settings"
+                description="Collapse to hide the per-account switches."
+                defaultOpen
+                className="bg-black/10"
+              >
+              <div className="space-y-2">
               {[...adminUsers]
+                .filter((user) => !user.deletedAt)
                 .sort((a, b) =>
                   a.role === b.role ? 0 : a.role === 'HOST' ? -1 : 1
                 )
@@ -1311,19 +1741,14 @@ export function AdminScreen() {
                         void toggleAdminNotificationType(user, 'adminSoundNotifications', !user.adminSoundNotifications)
                       }
                     />
-                    {user.role === 'GUEST' && (
-                      <Button
-                        variant="danger"
-                        onClick={() => setDeleteUserTarget(user)}
-                        disabled={busy === `delete-user-${user.id}`}
-                      >
-                        <Trash2 size={14} /> Delete guest permanently
-                      </Button>
-                    )}
                   </div>
                 </div>
               ))}
-              {!adminUsers.length && <p className="muted text-sm">No accounts found.</p>}
+              {!adminUsers.some((user) => !user.deletedAt) && (
+                <p className="muted text-sm">No accounts found.</p>
+              )}
+              </div>
+              </CollapsibleSection>
             </div>
           </Panel>
         </div>
@@ -1471,89 +1896,101 @@ export function AdminScreen() {
             </div>
           </div>
           <div className="grid gap-4 lg:grid-cols-2">
-          <Panel className="p-5">
-            <p className="eyebrow">Notifications</p>
-            <h3 className="mt-1 text-lg font-semibold">Activity feed</h3>
-            <div className="mt-3 max-h-96 space-y-2 overflow-auto">
-              {activity?.notifications.map((notification) => (
-                <div key={notification.id} className="rounded-xl border border-white/5 bg-black/15 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-sm">{eventLabel(notification.eventType)}</p>
-                    <span className="muted text-[11px]">
-                      {notification.readAt ? 'Read' : 'Unread'}
-                    </span>
-                  </div>
-                  <p className="muted mt-1 text-[11px]">
-                    {notification.actor?.username || 'System'} ·{' '}
-                    {formatDateTime(notification.createdAt)}
-                  </p>
-                </div>
-              ))}
-              {!activity?.notifications.length && (
-                <p className="muted text-sm">No activity yet.</p>
-              )}
-            </div>
-          </Panel>
-
-          <Panel className="p-5">
-            <p className="eyebrow">Game activity</p>
-            <h3 className="mt-1 text-lg font-semibold">Game sessions</h3>
-            <div className="mt-3 max-h-96 space-y-2 overflow-auto">
-              {activity?.gameSessions.map((session) => (
-                <div key={session.id} className="rounded-xl border border-white/5 bg-black/15 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-sm">{session.game.name}</p>
-                    <Badge tone="accent">{session.score} pts</Badge>
-                  </div>
-                  <p className="muted mt-1 text-[11px]">
-                    {formatDateTime(session.startedAt)}
-                    {session.endedAt ? ` → ${formatDateTime(session.endedAt)}` : ' · In progress'}
-                  </p>
-                </div>
-              ))}
-              {!activity?.gameSessions.length && (
-                <p className="muted text-sm">No game sessions recorded.</p>
-              )}
-            </div>
-          </Panel>
-
-          <Panel className="p-5">
-            <p className="eyebrow">Calls</p>
-            <h3 className="mt-1 text-lg font-semibold">Call history</h3>
-            <div className="mt-3 max-h-96 space-y-2 overflow-auto">
-              {activity?.calls.map((call) => (
-                <div key={call.id} className="rounded-xl border border-white/5 bg-black/15 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="flex items-center gap-2 text-sm">
-                      <Phone size={13} /> {eventLabel(call.status)}
+            <CollapsibleSection
+              title="Activity feed"
+              description="Recent notifications and read state."
+              defaultOpen
+              className="bg-black/10"
+            >
+              <div className="max-h-96 space-y-2 overflow-auto">
+                {activity?.notifications.map((notification) => (
+                  <div key={notification.id} className="rounded-xl border border-white/5 bg-black/15 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm">{eventLabel(notification.eventType)}</p>
+                      <span className="muted text-[11px]">
+                        {notification.readAt ? 'Read' : 'Unread'}
+                      </span>
+                    </div>
+                    <p className="muted mt-1 text-[11px]">
+                      {notification.actor?.username || 'System'} ·{' '}
+                      {formatDateTime(notification.createdAt)}
                     </p>
-                    <span className="muted text-[11px]">{formatDateTime(call.startedAt)}</span>
                   </div>
-                  <p className="muted mt-1 text-[11px]">
-                    {call.participants.map((participant) => participant.user?.username).join(' · ')}
-                  </p>
-                </div>
-              ))}
-              {!activity?.calls.length && <p className="muted text-sm">No calls yet.</p>}
-            </div>
-          </Panel>
+                ))}
+                {!activity?.notifications.length && (
+                  <p className="muted text-sm">No activity yet.</p>
+                )}
+              </div>
+            </CollapsibleSection>
 
-          <Panel className="p-5">
-            <p className="eyebrow">Audit log</p>
-            <h3 className="mt-1 text-lg font-semibold">Administrative actions</h3>
-            <div className="mt-3 max-h-96 space-y-2 overflow-auto">
-              {activity?.logs.map((log) => (
-                <div key={log.id} className="rounded-xl border border-white/5 bg-black/15 p-3">
-                  <p className="text-sm">{eventLabel(log.action)}</p>
-                  <p className="muted mt-1 text-[11px]">
-                    {formatDateTime(log.createdAt)}
-                    {log.targetId ? ` · ${log.targetId.slice(0, 8)}…` : ''}
-                  </p>
-                </div>
-              ))}
-              {!activity?.logs.length && <p className="muted text-sm">No audit events yet.</p>}
-            </div>
-          </Panel>
+            <CollapsibleSection
+              title="Game sessions"
+              description="Recent game activity and scores."
+              defaultOpen={false}
+              className="bg-black/10"
+            >
+              <div className="max-h-96 space-y-2 overflow-auto">
+                {activity?.gameSessions.map((session) => (
+                  <div key={session.id} className="rounded-xl border border-white/5 bg-black/15 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm">{session.game.name}</p>
+                      <Badge tone="accent">{session.score} pts</Badge>
+                    </div>
+                    <p className="muted mt-1 text-[11px]">
+                      {formatDateTime(session.startedAt)}
+                      {session.endedAt ? ` → ${formatDateTime(session.endedAt)}` : ' · In progress'}
+                    </p>
+                  </div>
+                ))}
+                {!activity?.gameSessions.length && (
+                  <p className="muted text-sm">No game sessions recorded.</p>
+                )}
+              </div>
+            </CollapsibleSection>
+
+            <CollapsibleSection
+              title="Call history"
+              description="Recent calls and participants."
+              defaultOpen={false}
+              className="bg-black/10"
+            >
+              <div className="max-h-96 space-y-2 overflow-auto">
+                {activity?.calls.map((call) => (
+                  <div key={call.id} className="rounded-xl border border-white/5 bg-black/15 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="flex items-center gap-2 text-sm">
+                        <Phone size={13} /> {eventLabel(call.status)}
+                      </p>
+                      <span className="muted text-[11px]">{formatDateTime(call.startedAt)}</span>
+                    </div>
+                    <p className="muted mt-1 text-[11px]">
+                      {call.participants.map((participant) => participant.user?.username).join(' · ')}
+                    </p>
+                  </div>
+                ))}
+                {!activity?.calls.length && <p className="muted text-sm">No calls yet.</p>}
+              </div>
+            </CollapsibleSection>
+
+            <CollapsibleSection
+              title="Administrative actions"
+              description="Audit log of admin actions."
+              defaultOpen={false}
+              className="bg-black/10"
+            >
+              <div className="max-h-96 space-y-2 overflow-auto">
+                {activity?.logs.map((log) => (
+                  <div key={log.id} className="rounded-xl border border-white/5 bg-black/15 p-3">
+                    <p className="text-sm">{eventLabel(log.action)}</p>
+                    <p className="muted mt-1 text-[11px]">
+                      {formatDateTime(log.createdAt)}
+                      {log.targetId ? ` · ${log.targetId.slice(0, 8)}…` : ''}
+                    </p>
+                  </div>
+                ))}
+                {!activity?.logs.length && <p className="muted text-sm">No audit events yet.</p>}
+              </div>
+            </CollapsibleSection>
           </div>
         </>
       )}
@@ -1602,6 +2039,30 @@ export function AdminScreen() {
           The whole conversation will be soft deleted for <strong>{deleteForLabel}</strong>. Every
           copy lands in the Recycle Bin and can be restored or permanently deleted from there.
         </p>
+        <div className="mt-4 grid gap-2 rounded-xl border border-white/10 bg-black/15 p-3 sm:grid-cols-2">
+          <label className="block text-xs">
+            <span className="field-label">From date</span>
+            <input
+              type="date"
+              className="field"
+              value={deleteAllFrom}
+              onChange={(event) => setDeleteAllFrom(event.target.value)}
+            />
+          </label>
+          <label className="block text-xs">
+            <span className="field-label">To date</span>
+            <input
+              type="date"
+              className="field"
+              value={deleteAllTo}
+              onChange={(event) => setDeleteAllTo(event.target.value)}
+            />
+          </label>
+          <p className="muted text-[11px] leading-5 sm:col-span-2">
+            Leave both dates empty to delete every message. Set one or both dates to delete only
+            the messages created in that period.
+          </p>
+        </div>
         <div className="mt-5 flex justify-end gap-2">
           <Button onClick={() => setDeleteAllOpen(false)}>Cancel</Button>
           <Button
@@ -1656,7 +2117,11 @@ export function AdminScreen() {
           <Button
             onClick={() =>
               recoverPrompt &&
-              void recoverDeleted(recoverPrompt.ids, recoverPrompt.role, ['HOST'])
+              void recoverDeleted(recoverPrompt.ids, recoverPrompt.role, ['HOST'], {
+                conversationId: recoverPrompt.conversationId,
+                from: recoverPrompt.from,
+                to: recoverPrompt.to
+              })
             }
             disabled={busy === 'recover'}
           >
@@ -1665,7 +2130,11 @@ export function AdminScreen() {
           <Button
             onClick={() =>
               recoverPrompt &&
-              void recoverDeleted(recoverPrompt.ids, recoverPrompt.role, ['GUEST'])
+              void recoverDeleted(recoverPrompt.ids, recoverPrompt.role, ['GUEST'], {
+                conversationId: recoverPrompt.conversationId,
+                from: recoverPrompt.from,
+                to: recoverPrompt.to
+              })
             }
             disabled={busy === 'recover'}
           >
@@ -1675,7 +2144,11 @@ export function AdminScreen() {
             variant="primary"
             onClick={() =>
               recoverPrompt &&
-              void recoverDeleted(recoverPrompt.ids, recoverPrompt.role, ['HOST', 'GUEST'])
+              void recoverDeleted(recoverPrompt.ids, recoverPrompt.role, ['HOST', 'GUEST'], {
+                conversationId: recoverPrompt.conversationId,
+                from: recoverPrompt.from,
+                to: recoverPrompt.to
+              })
             }
             disabled={busy === 'recover'}
           >
@@ -1686,29 +2159,95 @@ export function AdminScreen() {
 
       <Modal
         open={deleteUserTarget !== null}
-        title="Delete guest permanently?"
+        title={deleteUserTarget?.deletedAt ? 'Delete user forever?' : 'Delete user?'}
         onClose={() => setDeleteUserTarget(null)}
       >
         <p className="muted text-sm leading-6">
-          Permanently delete{' '}
-          <strong>
-            {deleteUserTarget?.displayName || deleteUserTarget?.username || 'this guest'}
-          </strong>
-          ? This removes the guest account and all of their chat messages, conversations, and game
-          messages from the database. This cannot be undone and it does not go to the Recycle Bin.
+          {deleteUserTarget?.deletedAt ? (
+            <>
+              Permanently delete{' '}
+              <strong>
+                {deleteUserTarget?.displayName || deleteUserTarget?.username || 'this user'}
+              </strong>
+              ? This removes the account and all chat messages, conversations, and game messages
+              from the database. This cannot be undone.
+            </>
+          ) : (
+            <>
+              Choose what to do with{' '}
+              <strong>
+                {deleteUserTarget?.displayName || deleteUserTarget?.username || 'this user'}
+              </strong>
+              . Moving to the Users recycle bin keeps all messages and lets you restore the account
+              later.
+            </>
+          )}
         </p>
-        <div className="mt-5 flex justify-end gap-2">
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
           <Button onClick={() => setDeleteUserTarget(null)}>Cancel</Button>
+          {!deleteUserTarget?.deletedAt && (
+            <Button
+              onClick={() => {
+                if (deleteUserTarget) void softDeleteUser(deleteUserTarget as AdminUser);
+              }}
+              disabled={!deleteUserTarget || busy === `soft-delete-user-${deleteUserTarget?.id}`}
+            >
+              {deleteUserTarget && busy === `soft-delete-user-${deleteUserTarget.id}`
+                ? 'Moving…'
+                : 'Move to recycle bin'}
+            </Button>
+          )}
           <Button
             variant="danger"
             onClick={() => void deleteGuestUser()}
-            disabled={
-              !deleteUserTarget || busy === `delete-user-${deleteUserTarget.id}`
-            }
+            disabled={!deleteUserTarget || busy === `delete-user-${deleteUserTarget?.id}`}
           >
             {deleteUserTarget && busy === `delete-user-${deleteUserTarget.id}`
               ? 'Deleting…'
               : 'Delete permanently'}
+          </Button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={passwordTarget !== null}
+        title="Change password"
+        onClose={() => {
+          setPasswordTarget(null);
+          setNewPassword('');
+        }}
+      >
+        <p className="muted text-sm leading-6">
+          Set a new password for{' '}
+          <strong>{passwordTarget?.displayName || passwordTarget?.username || 'this user'}</strong>.
+          Their active sessions will be signed out.
+        </p>
+        <Field
+          label="New password"
+          className="mt-4"
+          type="password"
+          value={newPassword}
+          onChange={(event) => setNewPassword(event.target.value)}
+          placeholder="At least 6 characters"
+          autoComplete="new-password"
+        />
+        <div className="mt-5 flex justify-end gap-2">
+          <Button
+            onClick={() => {
+              setPasswordTarget(null);
+              setNewPassword('');
+            }}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() => void changeUserPassword()}
+            disabled={!passwordTarget || busy === `password-${passwordTarget?.id}`}
+          >
+            {passwordTarget && busy === `password-${passwordTarget.id}`
+              ? 'Changing…'
+              : 'Change password'}
           </Button>
         </div>
       </Modal>

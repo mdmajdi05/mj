@@ -102,6 +102,28 @@ async function audit(actorId: string, action: string, targetId?: string, metadat
   });
 }
 
+/**
+ * Builds an inclusive createdAt filter from optional ISO/date strings. A
+ * date-only `to` value covers the whole day, which is what the date pickers in
+ * the delete/recover dialogs send.
+ */
+function createdAtFilter(from?: string, to?: string) {
+  const filter: { gte?: Date; lte?: Date } = {};
+  if (from) {
+    const parsed = new Date(from);
+    if (!Number.isNaN(parsed.getTime())) filter.gte = parsed;
+  }
+  if (to) {
+    const parsed = new Date(to);
+    if (!Number.isNaN(parsed.getTime())) {
+      const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(to);
+      if (dateOnly) parsed.setUTCHours(23, 59, 59, 999);
+      filter.lte = parsed;
+    }
+  }
+  return Object.keys(filter).length ? filter : undefined;
+}
+
 async function setScreen(userId: string, screen: ScreenName, chatVisible: boolean) {
   return prisma.screenPreference.upsert({
     where: { userId },
@@ -277,6 +299,15 @@ chatRouter.post(
       }
       throw error;
     });
+    // A chat removed from the Host's list comes back as soon as either side
+    // sends a new message.
+    if (conversation.hostHiddenAt) {
+      await prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { hostHiddenAt: null }
+      });
+      if (conversation.hostId) emitToUser(conversation.hostId, 'contacts:updated', {});
+    }
     const replyToId = parsed.data.replyToId ?? null;
     if (replyToId) {
       const quoted = await prisma.message.findFirst({
@@ -396,18 +427,35 @@ chatRouter.delete(
       throw new HttpError(404, 'Message not found');
     }
 
-    // Hiding is per account: the other participant keeps their copy.
-    await prisma.messageHide.upsert({
-      where: { messageId_userId: { messageId: message.id, userId: req.user!.id } },
-      create: { messageId: message.id, userId: req.user!.id },
-      update: {}
-    });
-
-    if (req.user!.role === Role.HOST) {
-      await audit(req.user!.id, 'HIDE_MESSAGE', message.id);
+    // ME hides the copy for this account only. EVERYONE is the Host's
+    // "delete for everyone" and hides the message for both participants while
+    // keeping the row so the Recycle Bin can restore it.
+    const scope = req.query.scope === 'EVERYONE' ? 'EVERYONE' : 'ME';
+    if (scope === 'EVERYONE' && req.user!.role !== Role.HOST) {
+      throw new HttpError(403, 'Only the Host can delete a message for everyone');
     }
 
-    emitToUser(req.user!.id, 'message:hidden', { ids: [message.id] });
+    const userIds =
+      scope === 'EVERYONE'
+        ? [conversation.hostId, conversation.guestId].filter(
+            (userId): userId is string => Boolean(userId)
+          )
+        : [req.user!.id];
+
+    if (userIds.length) {
+      await prisma.messageHide.createMany({
+        data: userIds.map((userId) => ({ messageId: message.id, userId })),
+        skipDuplicates: true
+      });
+    }
+
+    if (req.user!.role === Role.HOST) {
+      await audit(req.user!.id, scope === 'EVERYONE' ? 'DELETE_MESSAGE_EVERYONE' : 'HIDE_MESSAGE', message.id, {
+        scope
+      });
+    }
+
+    for (const userId of userIds) emitToUser(userId, 'message:hidden', { ids: [message.id] });
     res.status(204).end();
   })
 );
@@ -417,30 +465,63 @@ chatRouter.post(
   requireChatUnlock,
   asyncHandler(async (req: AuthRequest, res) => {
     const parsed = z
-      .object({ ids: z.array(z.string().min(1)).min(1).max(500) })
-      .safeParse(req.body);
-    if (!parsed.success) throw new HttpError(400, 'Select at least one message');
+      .object({
+        ids: z.array(z.string().min(1)).max(500).optional(),
+        scope: z.enum(['ME', 'EVERYONE']).optional(),
+        senderScope: z.enum(['MINE', 'THEIRS', 'ALL']).optional(),
+        from: z.string().optional(),
+        to: z.string().optional()
+      })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) throw new HttpError(400, 'Invalid message delete request');
+
+    const scope = parsed.data.scope ?? 'ME';
+    if (scope === 'EVERYONE' && req.user!.role !== Role.HOST) {
+      throw new HttpError(403, 'Only the Host can delete messages for everyone');
+    }
 
     const conversation = await findConversationFor(req.user!.id);
     if (!conversation) throw new HttpError(404, 'Conversation not found');
 
+    const senderScope = parsed.data.senderScope ?? 'ALL';
+    const mineId = req.user!.id;
+    const theirsId =
+      conversation.hostId === mineId ? conversation.guestId : conversation.hostId;
+    const senderFilter =
+      senderScope === 'MINE'
+        ? { senderId: mineId }
+        : senderScope === 'THEIRS' && theirsId
+          ? { senderId: theirsId }
+          : {};
+    const createdAt = createdAtFilter(parsed.data.from, parsed.data.to);
+
     const rows = await prisma.message.findMany({
       where: {
-        id: { in: parsed.data.ids },
         conversationId: conversation.id,
-        deletedAt: null
+        destination: MessageDestination.CHAT,
+        deletedAt: null,
+        ...(parsed.data.ids?.length ? { id: { in: parsed.data.ids } } : {}),
+        ...(createdAt ? { createdAt } : {}),
+        ...senderFilter
       },
       select: { id: true }
     });
-    if (rows.length) {
+    const ids = rows.map((row) => row.id);
+    const userIds =
+      scope === 'EVERYONE'
+        ? [conversation.hostId, conversation.guestId].filter(
+            (userId): userId is string => Boolean(userId)
+          )
+        : [req.user!.id];
+
+    if (ids.length && userIds.length) {
       await prisma.messageHide.createMany({
-        data: rows.map((row) => ({ messageId: row.id, userId: req.user!.id })),
+        data: ids.flatMap((messageId) => userIds.map((userId) => ({ messageId, userId }))),
         skipDuplicates: true
       });
     }
-    const ids = rows.map((row) => row.id);
-    emitToUser(req.user!.id, 'message:hidden', { ids });
-    res.json({ ok: true, count: ids.length, ids });
+    for (const userId of userIds) emitToUser(userId, 'message:hidden', { ids });
+    res.json({ ok: true, count: ids.length, ids, scope, senderScope });
   })
 );
 
@@ -486,8 +567,11 @@ chatRouter.post(
     const parsed = z
       .object({
         conversationId: z.string().min(1).optional(),
+        peerId: z.string().min(1).optional(),
         scope: z.enum(['ME', 'BOTH_SIDES']),
-        senderScope: z.enum(['MINE', 'THEIRS', 'ALL']).optional()
+        senderScope: z.enum(['MINE', 'THEIRS', 'ALL']).optional(),
+        from: z.string().optional(),
+        to: z.string().optional()
       })
       .safeParse(req.body ?? {});
     if (!parsed.success) throw new HttpError(400, 'Invalid delete request');
@@ -495,39 +579,53 @@ chatRouter.post(
     const pair = await pairOrThrow(req.user!.id);
     let conversation = parsed.data.conversationId
       ? await prisma.conversation.findUnique({ where: { id: parsed.data.conversationId } })
-      : await findConversationFor(req.user!.id);
+      : parsed.data.peerId
+        ? await prisma.conversation.findUnique({
+            where: { hostId_guestId: { hostId: pair.host.id, guestId: parsed.data.peerId } }
+          })
+        : await findConversationFor(req.user!.id);
 
-    if (
-      !conversation ||
-      (conversation.hostId !== pair.host.id && conversation.guestId !== pair.guest.id)
-    ) {
+    const isHost = req.user!.role === Role.HOST;
+    const ownsConversation =
+      conversation &&
+      (isHost
+        ? conversation.hostId === pair.host.id
+        : conversation.hostId === pair.host.id && conversation.guestId === pair.guest.id);
+    if (!conversation || !ownsConversation) {
       throw new HttpError(404, 'Conversation not found');
     }
 
     const senderScope = parsed.data.senderScope ?? 'ALL';
     const mineId = req.user!.id;
-    const theirsId = pair.host.id === mineId ? pair.guest.id : pair.host.id;
+    const theirsId =
+      conversation.hostId === mineId ? conversation.guestId : conversation.hostId;
     const senderFilter =
       senderScope === 'MINE'
         ? { senderId: mineId }
-        : senderScope === 'THEIRS'
+        : senderScope === 'THEIRS' && theirsId
           ? { senderId: theirsId }
           : {};
 
+    const createdAt = createdAtFilter(parsed.data.from, parsed.data.to);
     const rows = await prisma.message.findMany({
       where: {
         conversationId: conversation.id,
         destination: MessageDestination.CHAT,
         deletedAt: null,
+        ...(createdAt ? { createdAt } : {}),
         ...senderFilter
       },
       select: { id: true }
     });
     const ids = rows.map((row) => row.id);
     const targetUserIds =
-      parsed.data.scope === 'BOTH_SIDES' ? [pair.host.id, pair.guest.id] : [req.user!.id];
+      parsed.data.scope === 'BOTH_SIDES'
+        ? [conversation.hostId, conversation.guestId].filter(
+            (userId): userId is string => Boolean(userId)
+          )
+        : [req.user!.id];
 
-    if (ids.length) {
+    if (ids.length && targetUserIds.length) {
       await prisma.messageHide.createMany({
         data: ids.flatMap((messageId) =>
           targetUserIds.map((userId) => ({ messageId, userId }))
@@ -548,6 +646,37 @@ chatRouter.post(
     }
 
     res.json({ ok: true, count: ids.length, ids, scope: parsed.data.scope, senderScope });
+  })
+);
+
+/**
+ * Host-only: hides a chat from the Host's contact list without deleting any
+ * message. A new message (from either side) or admin recovery brings it back.
+ */
+chatRouter.post(
+  '/contacts/:peerId/remove',
+  asyncHandler(async (req: AuthRequest, res) => {
+    if (req.user!.role !== Role.HOST) {
+      throw new HttpError(403, 'Only the Host can remove a chat from the list');
+    }
+    const peerId = String(req.params.peerId || '').trim();
+    if (!peerId) throw new HttpError(400, 'Contact id is required');
+
+    const guest = await prisma.user.findFirst({
+      where: { id: peerId, role: Role.GUEST, deletedAt: null }
+    });
+    if (!guest) throw new HttpError(404, 'Contact not found');
+
+    // Even a brand-new contact with no messages can be removed from the list.
+    const conversation = await prisma.conversation.upsert({
+      where: { hostId_guestId: { hostId: req.user!.id, guestId: guest.id } },
+      create: { hostId: req.user!.id, guestId: guest.id, hostHiddenAt: new Date() },
+      update: { hostHiddenAt: new Date() }
+    });
+
+    await audit(req.user!.id, 'REMOVE_CHAT_FROM_LIST', conversation.id, { guestId: guest.id });
+    emitToUser(req.user!.id, 'contacts:updated', {});
+    res.json({ ok: true });
   })
 );
 
@@ -1289,6 +1418,10 @@ chatRouter.get(
     const roleFilter = String(req.query.role ?? '').trim();
     const senderRole =
       roleFilter === Role.HOST || roleFilter === Role.GUEST ? (roleFilter as Role) : undefined;
+    const createdAt = createdAtFilter(
+      String(req.query.from ?? '').trim() || undefined,
+      String(req.query.to ?? '').trim() || undefined
+    );
     const rows = await prisma.message.findMany({
       where: {
         deletedAt: null,
@@ -1298,6 +1431,7 @@ chatRouter.get(
         hides: { none: {} },
         ...(conversationId ? { conversationId } : {}),
         ...(senderRole ? { sender: { role: senderRole } } : {}),
+        ...(createdAt ? { createdAt } : {}),
         ...(query ? { content: { contains: query, mode: 'insensitive' as const } } : {})
       },
       orderBy: { createdAt: 'desc' },
@@ -1326,7 +1460,9 @@ chatRouter.post(
       .object({
         conversationId: z.string().min(1).optional(),
         ids: z.array(z.string().min(1)).max(500).optional(),
-        deleteFor: z.array(z.nativeEnum(Role)).min(1).max(2).optional()
+        deleteFor: z.array(z.nativeEnum(Role)).min(1).max(2).optional(),
+        from: z.string().optional(),
+        to: z.string().optional()
       })
       .safeParse(req.body ?? {});
     if (!parsed.success) throw new HttpError(400, 'Invalid message delete request');
@@ -1362,19 +1498,15 @@ chatRouter.post(
     }
     if (!conversation) throw new HttpError(404, 'Conversation not found');
 
+    const createdAt = createdAtFilter(parsed.data.from, parsed.data.to);
     const rows = await prisma.message.findMany({
-      where: selectedIds?.length
-        ? {
-            conversationId: conversation.id,
-            destination: MessageDestination.CHAT,
-            deletedAt: null,
-            id: { in: selectedIds }
-          }
-        : {
-            conversationId: conversation.id,
-            destination: MessageDestination.CHAT,
-            deletedAt: null
-          },
+      where: {
+        conversationId: conversation.id,
+        destination: MessageDestination.CHAT,
+        deletedAt: null,
+        ...(selectedIds?.length ? { id: { in: selectedIds } } : {}),
+        ...(createdAt ? { createdAt } : {})
+      },
       select: { id: true }
     });
     const ids = rows.map((row) => row.id);
@@ -1411,11 +1543,28 @@ chatRouter.post(
 chatRouter.get(
   '/admin/deleted-messages',
   requireHost,
-  asyncHandler(async (_req: AuthRequest, res) => {
+  asyncHandler(async (req: AuthRequest, res) => {
+    const conversationId = String(req.query.conversationId ?? '').trim();
+    const roleFilter = String(req.query.role ?? '').trim();
+    const role =
+      roleFilter === Role.HOST || roleFilter === Role.GUEST ? (roleFilter as Role) : undefined;
+    const createdAt = createdAtFilter(
+      String(req.query.from ?? '').trim() || undefined,
+      String(req.query.to ?? '').trim() || undefined
+    );
     const rows = await prisma.message.findMany({
       where: {
         destination: MessageDestination.CHAT,
-        OR: [{ deletedAt: { not: null } }, { hides: { some: {} } }]
+        ...(conversationId ? { conversationId } : {}),
+        ...(createdAt ? { createdAt } : {}),
+        ...(role
+          ? {
+              OR: [
+                { sender: { role } },
+                { hides: { some: { user: { role } } } }
+              ]
+            }
+          : { OR: [{ deletedAt: { not: null } }, { hides: { some: {} } }] })
       },
       orderBy: { createdAt: 'desc' },
       take: 300,
@@ -1452,7 +1601,10 @@ chatRouter.post(
       .object({
         ids: z.array(z.string().min(1)).optional(),
         role: z.nativeEnum(Role).optional(),
-        recoverFor: z.array(z.nativeEnum(Role)).min(1).max(2).optional()
+        recoverFor: z.array(z.nativeEnum(Role)).min(1).max(2).optional(),
+        conversationId: z.string().min(1).optional(),
+        from: z.string().optional(),
+        to: z.string().optional()
       })
       .safeParse(req.body ?? {});
     if (!parsed.success) throw new HttpError(400, 'Invalid recovery request');
@@ -1463,10 +1615,13 @@ chatRouter.post(
       : parsed.data.role
         ? [parsed.data.role]
         : [Role.HOST, Role.GUEST];
+    const createdAt = createdAtFilter(parsed.data.from, parsed.data.to);
 
     const targetRows = await prisma.message.findMany({
       where: {
         destination: MessageDestination.CHAT,
+        ...(parsed.data.conversationId ? { conversationId: parsed.data.conversationId } : {}),
+        ...(createdAt ? { createdAt } : {}),
         ...(ids ? { id: { in: ids } } : {}),
         ...(parsed.data.role && !ids
           ? { hides: { some: { user: { role: parsed.data.role } } } }
@@ -1508,11 +1663,8 @@ chatRouter.post(
       ];
       if (conversationIds.length) {
         await prisma.conversation.updateMany({
-          where: {
-            id: { in: conversationIds },
-            status: { in: [ConversationStatus.ARCHIVED, ConversationStatus.DELETED] }
-          },
-          data: { status: ConversationStatus.ACTIVE }
+          where: { id: { in: conversationIds } },
+          data: { status: ConversationStatus.ACTIVE, hostHiddenAt: null }
         });
       }
     }
@@ -1520,7 +1672,10 @@ chatRouter.post(
     await audit(req.user!.id, 'RECOVER_DELETED_MESSAGES', undefined, {
       count,
       ids: targetIds.length,
-      recoverFor: recoverRoles
+      recoverFor: recoverRoles,
+      conversationId: parsed.data.conversationId ?? null,
+      from: parsed.data.from ?? null,
+      to: parsed.data.to ?? null
     });
     const recipients = await prisma.user.findMany({ select: { id: true } });
     for (const recipient of recipients) emitToUser(recipient.id, 'messages:recovered', {});
@@ -1536,22 +1691,34 @@ chatRouter.delete(
     const parsed = z
       .object({
         ids: z.array(z.string().min(1)).optional(),
-        role: z.nativeEnum(Role).optional()
+        role: z.nativeEnum(Role).optional(),
+        conversationId: z.string().min(1).optional(),
+        from: z.string().optional(),
+        to: z.string().optional()
       })
       .safeParse(req.body ?? {});
     if (!parsed.success) throw new HttpError(400, 'Invalid delete request');
 
+    const createdAt = createdAtFilter(parsed.data.from, parsed.data.to);
+    const scoped = {
+      destination: MessageDestination.CHAT,
+      ...(parsed.data.conversationId ? { conversationId: parsed.data.conversationId } : {}),
+      ...(createdAt ? { createdAt } : {})
+    };
     let where: any;
     if (parsed.data.ids?.length) {
       where = { id: { in: parsed.data.ids } };
     } else if (parsed.data.role) {
-      const users = await prisma.user.findMany({
-        where: { role: parsed.data.role },
-        select: { id: true }
-      });
-      where = { hides: { some: { userId: { in: users.map((user) => user.id) } } } };
+      where = {
+        ...scoped,
+        OR: [
+          { sender: { role: parsed.data.role } },
+          { hides: { some: { user: { role: parsed.data.role } } } }
+        ]
+      };
     } else {
       where = {
+        ...scoped,
         OR: [{ deletedAt: { not: null } }, { hides: { some: {} } }]
       };
     }
@@ -1592,7 +1759,9 @@ chatRouter.get(
         username: true,
         displayName: true,
         role: true,
-        lastSeenAt: true
+        lastSeenAt: true,
+        deletedAt: true,
+        createdAt: true
       }
     });
     const preferences = await prisma.userPreference.findMany({
@@ -1615,6 +1784,134 @@ chatRouter.get(
         adminSoundNotifications: preferenceMap.get(user.id)?.adminSoundNotifications ?? true
       }))
     );
+  })
+);
+
+/** Soft-deleted accounts parked in the Users recycle bin. */
+chatRouter.get(
+  '/admin/users/deleted',
+  requireHost,
+  asyncHandler(async (_req: AuthRequest, res) => {
+    const users = await prisma.user.findMany({
+      where: { role: Role.GUEST, deletedAt: { not: null } },
+      orderBy: { deletedAt: 'desc' },
+      select: {
+        id: true,
+        username: true,
+        displayName: true,
+        role: true,
+        lastSeenAt: true,
+        deletedAt: true,
+        createdAt: true
+      }
+    });
+    const rows = await Promise.all(
+      users.map(async (user) => {
+        const [conversations, messages] = await Promise.all([
+          prisma.conversation.count({ where: { guestId: user.id } }),
+          prisma.message.count({
+            where: { conversation: { guestId: user.id } }
+          })
+        ]);
+        return { ...user, conversations, messages };
+      })
+    );
+    res.json(rows);
+  })
+);
+
+/** Moves a Guest account to the Users recycle bin without deleting any data. */
+chatRouter.post(
+  '/admin/users/:id/soft-delete',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const userId = String(req.params.id || '').trim();
+    if (!userId) throw new HttpError(400, 'User id is required');
+
+    const target = await prisma.user.findUnique({ where: { id: userId } });
+    if (!target) throw new HttpError(404, 'User not found');
+    if (target.role !== Role.GUEST) {
+      throw new HttpError(400, 'Only Guest accounts can be moved to the recycle bin');
+    }
+    if (target.deletedAt) {
+      res.json({ ok: true, alreadyDeleted: true });
+      return;
+    }
+
+    await prisma.$transaction([
+      prisma.user.update({ where: { id: userId }, data: { deletedAt: new Date() } }),
+      prisma.session.deleteMany({ where: { userId } }),
+      prisma.userPreference.updateMany({
+        where: { activePeerId: userId },
+        data: { activePeerId: null }
+      })
+    ]);
+
+    await audit(req.user!.id, 'SOFT_DELETE_GUEST_USER', userId, {
+      username: target.username
+    });
+    const recipients = await prisma.user.findMany({ select: { id: true } });
+    for (const recipient of recipients) {
+      emitToUser(recipient.id, 'contact:removed', { userId });
+      emitToUser(recipient.id, 'contacts:updated', {});
+    }
+    emitToUser(userId, 'session:revoked', {});
+    res.json({ ok: true });
+  })
+);
+
+/** Restores a soft-deleted Guest account from the Users recycle bin. */
+chatRouter.post(
+  '/admin/users/:id/restore',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const userId = String(req.params.id || '').trim();
+    if (!userId) throw new HttpError(400, 'User id is required');
+
+    const target = await prisma.user.findUnique({ where: { id: userId } });
+    if (!target) throw new HttpError(404, 'User not found');
+    if (target.role !== Role.GUEST) {
+      throw new HttpError(400, 'Only Guest accounts can be restored');
+    }
+    if (!target.deletedAt) {
+      res.json({ ok: true, alreadyActive: true });
+      return;
+    }
+
+    await prisma.user.update({ where: { id: userId }, data: { deletedAt: null } });
+    await audit(req.user!.id, 'RESTORE_GUEST_USER', userId, { username: target.username });
+    const recipients = await prisma.user.findMany({ select: { id: true } });
+    for (const recipient of recipients) emitToUser(recipient.id, 'contacts:updated', {});
+    res.json({ ok: true });
+  })
+);
+
+/** Host-managed password reset for any account. */
+chatRouter.post(
+  '/admin/users/:id/password',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({ newPassword: z.string().min(6, 'Use at least 6 characters').max(200) })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      throw new HttpError(400, parsed.error.issues[0]?.message || 'Invalid password');
+    }
+
+    const userId = String(req.params.id || '').trim();
+    const target = await prisma.user.findUnique({ where: { id: userId } });
+    if (!target) throw new HttpError(404, 'User not found');
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash: await bcrypt.hash(parsed.data.newPassword, 12) }
+    });
+    await prisma.session.deleteMany({ where: { userId } });
+    await audit(req.user!.id, 'ADMIN_CHANGE_USER_PASSWORD', userId, {
+      username: target.username
+    });
+    emitToUser(userId, 'session:revoked', {});
+    res.json({ ok: true });
   })
 );
 

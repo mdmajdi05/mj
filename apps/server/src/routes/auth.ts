@@ -85,7 +85,10 @@ authRouter.post(
     }
 
     const user = await prisma.user.findFirst({
-      where: { username: { equals: parsed.data.username, mode: 'insensitive' } }
+      where: {
+        username: { equals: parsed.data.username, mode: 'insensitive' },
+        deletedAt: null
+      }
     });
     if (!user || !(await bcrypt.compare(parsed.data.password, user.passwordHash))) {
       res.status(401).json({ error: 'Invalid username or password' });
@@ -163,7 +166,7 @@ authRouter.post(
       return;
     }
 
-    const host = await prisma.user.findFirst({ where: { role: Role.HOST } });
+    const host = await prisma.user.findFirst({ where: { role: Role.HOST, deletedAt: null } });
     if (!host || !(await bcrypt.compare(parsed.data.password, host.passwordHash))) {
       res.status(401).json({ error: 'Incorrect password' });
       return;
