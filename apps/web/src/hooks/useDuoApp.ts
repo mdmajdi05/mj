@@ -1414,10 +1414,12 @@ export function useDuoApp() {
       const current = userRef.current;
       if (
         current?.role === 'HOST' &&
-        activePeerRef.current &&
         message.senderId !== current.id &&
         message.senderId !== activePeerRef.current
       ) {
+        // A chat that was removed from the list (or another Guest) has sent a
+        // message. Switch to that conversation so the Host really receives it.
+        void selectPeer(message.senderId).catch(() => undefined);
         void loadContacts().catch(() => undefined);
         return;
       }
@@ -1448,6 +1450,7 @@ export function useDuoApp() {
 
     socket.on('contacts:updated', () => {
       void loadContacts().catch(() => undefined);
+      void loadSummary().catch(() => undefined);
     });
 
     socket.on('contact:removed', () => {
@@ -1794,9 +1797,11 @@ export function useDuoApp() {
     loadMessages,
     loadNotifications,
     loadPermissions,
+    loadSummary,
     lockChatSession,
     logout,
     playNotificationSound,
+    selectPeer,
     sendOffer,
     setScreen,
     showBrowserNotification,
@@ -2144,6 +2149,7 @@ export function useDuoApp() {
       peerId?: string;
       from?: string;
       to?: string;
+      hideFromList?: boolean;
     }) => {
       const result = await api<{ ok: boolean; count: number; ids: string[] }>(
         '/chat/messages/delete-conversation',
@@ -2155,11 +2161,26 @@ export function useDuoApp() {
       if (params.scope === 'ME' || params.scope === 'BOTH_SIDES') {
         // Refresh so the view reflects hides for this account; if both sides
         // were deleted, other side will update via socket event.
-        await loadMessages();
+        if (params.hideFromList && userRef.current?.role === 'HOST') {
+          const remaining = await loadContacts();
+          await loadSummary();
+          if (activePeerRef.current === params.peerId) {
+            const nextId = remaining.find((contact) => contact.id !== params.peerId)?.id || '';
+            if (nextId) await selectPeer(nextId);
+            else {
+              setActivePeerId('');
+              await loadMessages();
+            }
+          } else {
+            await loadMessages();
+          }
+        } else {
+          await loadMessages();
+        }
       }
       return result.count;
     },
-    [loadMessages]
+    [loadContacts, loadMessages, loadSummary, selectPeer]
   );
 
   /** Host-only: hide a chat from the contact list without deleting messages. */

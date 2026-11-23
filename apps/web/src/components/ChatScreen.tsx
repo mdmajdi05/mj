@@ -43,7 +43,7 @@ type ConfirmAction =
   | { type: 'mine' }
   | null;
 
-type DeleteChatScope = 'ME' | 'BOTH_SIDES' | 'REMOVE_FROM_LIST';
+type DeleteChatScope = 'ME' | 'BOTH_SIDES';
 
 /** Same profile mark used by the Study Assistant header. */
 const ASSISTANT_AVATAR = '✦';
@@ -78,6 +78,9 @@ export function ChatScreen() {
   );
   const [deleteChatFrom, setDeleteChatFrom] = useState('');
   const [deleteChatTo, setDeleteChatTo] = useState('');
+  const [removeChatTarget, setRemoveChatTarget] = useState<{ id: string; name: string } | null>(
+    null
+  );
   const [toolsOpen, setToolsOpen] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -533,26 +536,39 @@ export function ChatScreen() {
     }
   }
 
-  function openDeleteChat(peerId?: string, initialScope: DeleteChatScope = 'ME') {
+  function openDeleteChat(peerId?: string) {
     setDeleteChatPeerId(peerId || duo.activePeerId || '');
-    setDeleteChatScope(initialScope);
+    setDeleteChatScope('ME');
     setDeleteChatSenderScope('ALL');
     setDeleteChatFrom('');
     setDeleteChatTo('');
     setDeleteChatOpen(true);
   }
 
+  async function removeChat(scope: 'ME' | 'BOTH_SIDES') {
+    if (!removeChatTarget) return;
+    setBusy(true);
+    try {
+      const count = await duo.deleteConversation({
+        scope,
+        senderScope: 'ALL',
+        peerId: removeChatTarget.id,
+        hideFromList: true
+      });
+      setRemoveChatTarget(null);
+      duo.setNotice(
+        `${removeChatTarget.name} removed from your chat list. ${count} message${count === 1 ? '' : 's'} moved to the Recycle Bin.`
+      );
+    } catch (cause) {
+      duo.setError(cause instanceof Error ? cause.message : 'Could not remove chat');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function runDeleteChat() {
     setBusy(true);
     try {
-      if (deleteChatScope === 'REMOVE_FROM_LIST') {
-        const peerId = deleteChatPeerId || duo.activePeerId;
-        if (!peerId) throw new Error('Choose a chat first.');
-        await duo.removeChatFromList(peerId);
-        setDeleteChatOpen(false);
-        duo.setNotice('Chat removed from your list. It comes back when a new message arrives.');
-        return;
-      }
       const count = await duo.deleteConversation({
         scope: deleteChatScope,
         senderScope: deleteChatScope === 'BOTH_SIDES' ? deleteChatSenderScope : 'ALL',
@@ -639,7 +655,7 @@ export function ChatScreen() {
                       title="Remove from chat list"
                       onClick={(event) => {
                         event.stopPropagation();
-                        openDeleteChat(contact.id, 'REMOVE_FROM_LIST');
+                        setRemoveChatTarget({ id: contact.id, name });
                       }}
                     >
                       <X size={13} />
@@ -1139,58 +1155,32 @@ export function ChatScreen() {
               <span className="muted block text-xs">Both Host and Guest copies are soft deleted to Recycle Bin.</span>
             </span>
           </button>
-          {isHost && (
-            <button
-              type="button"
-              className={`flex w-full items-start gap-3 rounded-xl border p-3 text-left ${
-                deleteChatScope === 'REMOVE_FROM_LIST'
-                  ? 'border-fuchsia-400/40 bg-fuchsia-500/10'
-                  : 'border-white/10 bg-black/15'
-              }`}
-              onClick={() => setDeleteChatScope('REMOVE_FROM_LIST')}
-            >
-              <span className="mt-0.5 h-4 w-4 rounded-full border border-white/40">
-                {deleteChatScope === 'REMOVE_FROM_LIST' && (
-                  <span className="block h-full w-full rounded-full bg-fuchsia-400" />
-                )}
-              </span>
-              <span>
-                <span className="block text-sm font-medium">Remove from chat list</span>
-                <span className="muted block text-xs">
-                  Hide this chat from your list only. No message is deleted, and the chat returns
-                  when a new message arrives.
-                </span>
-              </span>
-            </button>
-          )}
         </div>
 
-        {deleteChatScope !== 'REMOVE_FROM_LIST' && (
-          <div className="mt-4 grid gap-2 rounded-xl border border-white/10 bg-black/15 p-3 sm:grid-cols-2">
-            <label className="block text-xs">
-              <span className="field-label">From date</span>
-              <input
-                type="date"
-                className="field"
-                value={deleteChatFrom}
-                onChange={(event) => setDeleteChatFrom(event.target.value)}
-              />
-            </label>
-            <label className="block text-xs">
-              <span className="field-label">To date</span>
-              <input
-                type="date"
-                className="field"
-                value={deleteChatTo}
-                onChange={(event) => setDeleteChatTo(event.target.value)}
-              />
-            </label>
-            <p className="muted text-[11px] leading-5 sm:col-span-2">
-              Leave both dates empty to delete the whole chat. Set one or both dates to delete only
-              messages from that period.
-            </p>
-          </div>
-        )}
+        <div className="mt-4 grid gap-2 rounded-xl border border-white/10 bg-black/15 p-3 sm:grid-cols-2">
+          <label className="block text-xs">
+            <span className="field-label">From date</span>
+            <input
+              type="date"
+              className="field"
+              value={deleteChatFrom}
+              onChange={(event) => setDeleteChatFrom(event.target.value)}
+            />
+          </label>
+          <label className="block text-xs">
+            <span className="field-label">To date</span>
+            <input
+              type="date"
+              className="field"
+              value={deleteChatTo}
+              onChange={(event) => setDeleteChatTo(event.target.value)}
+            />
+          </label>
+          <p className="muted text-[11px] leading-5 sm:col-span-2">
+            Leave both dates empty to delete the whole chat. Set one or both dates to delete only
+            messages from that period.
+          </p>
+        </div>
 
         {deleteChatScope === 'BOTH_SIDES' && (
           <div className="mt-4 rounded-xl border border-white/10 bg-black/15 p-3">
@@ -1219,12 +1209,52 @@ export function ChatScreen() {
         <div className="mt-5 flex justify-end gap-2">
           <Button onClick={() => setDeleteChatOpen(false)}>Cancel</Button>
           <Button variant="danger" onClick={() => void runDeleteChat()} disabled={busy}>
-            {busy
-              ? 'Working…'
-              : deleteChatScope === 'REMOVE_FROM_LIST'
-                ? 'Remove from list'
-                : 'Delete chat'}
+            {busy ? 'Working…' : 'Delete chat'}
           </Button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={removeChatTarget !== null}
+        title={`Remove ${removeChatTarget?.name || 'chat'} from your list?`}
+        onClose={() => setRemoveChatTarget(null)}
+      >
+        <p className="muted text-sm leading-6">
+          Choose one action. Both moves soft delete this chat and send the messages to the Recycle
+          Bin, where the Host can restore them.
+        </p>
+        <div className="mt-5 grid gap-2">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/15 p-3 text-left transition hover:border-fuchsia-300/40 hover:bg-fuchsia-500/10"
+            onClick={() => void removeChat('ME')}
+            disabled={busy}
+          >
+            <span>
+              <span className="block text-sm font-medium">Delete all chat for me</span>
+              <span className="muted block text-xs">
+                Only your copy is hidden. {removeChatTarget?.name || 'They'} keeps theirs.
+              </span>
+            </span>
+            <Trash2 size={16} className="shrink-0 text-rose-200" />
+          </button>
+          <button
+            type="button"
+            className="flex w-full items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/15 p-3 text-left transition hover:border-fuchsia-300/40 hover:bg-fuchsia-500/10"
+            onClick={() => void removeChat('BOTH_SIDES')}
+            disabled={busy}
+          >
+            <span>
+              <span className="block text-sm font-medium">Delete for everyone</span>
+              <span className="muted block text-xs">
+                Both copies are hidden and kept in the Recycle Bin.
+              </span>
+            </span>
+            <Trash2 size={16} className="shrink-0 text-rose-200" />
+          </button>
+        </div>
+        <div className="mt-4 flex justify-end">
+          <Button onClick={() => setRemoveChatTarget(null)}>Cancel</Button>
         </div>
       </Modal>
     </div>

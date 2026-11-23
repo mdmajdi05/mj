@@ -300,13 +300,21 @@ chatRouter.post(
       throw error;
     });
     // A chat removed from the Host's list comes back as soon as either side
-    // sends a new message.
+    // sends a new message. Make the returning sender the Host's active peer so
+    // the message is actually opened instead of being ignored as off-peer.
     if (conversation.hostHiddenAt) {
       await prisma.conversation.update({
         where: { id: conversation.id },
         data: { hostHiddenAt: null }
       });
-      if (conversation.hostId) emitToUser(conversation.hostId, 'contacts:updated', {});
+      if (conversation.hostId && conversation.guestId) {
+        await prisma.userPreference.upsert({
+          where: { userId: conversation.hostId },
+          create: { userId: conversation.hostId, activePeerId: conversation.guestId },
+          update: { activePeerId: conversation.guestId }
+        });
+        emitToUser(conversation.hostId, 'contacts:updated', {});
+      }
     }
     const replyToId = parsed.data.replyToId ?? null;
     if (replyToId) {
@@ -571,7 +579,10 @@ chatRouter.post(
         scope: z.enum(['ME', 'BOTH_SIDES']),
         senderScope: z.enum(['MINE', 'THEIRS', 'ALL']).optional(),
         from: z.string().optional(),
-        to: z.string().optional()
+        to: z.string().optional(),
+        // Set by the simplified "remove chat" action so the Host's contact
+        // list drops the conversation together with the deleted messages.
+        hideFromList: z.boolean().optional()
       })
       .safeParse(req.body ?? {});
     if (!parsed.success) throw new HttpError(400, 'Invalid delete request');
@@ -643,6 +654,14 @@ chatRouter.post(
 
     for (const userId of targetUserIds) {
       emitToUser(userId, 'message:hidden', { ids });
+    }
+
+    if (isHost && parsed.data.hideFromList && conversation.hostId) {
+      await prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { hostHiddenAt: new Date() }
+      });
+      emitToUser(req.user!.id, 'contacts:updated', {});
     }
 
     res.json({ ok: true, count: ids.length, ids, scope: parsed.data.scope, senderScope });
