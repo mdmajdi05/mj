@@ -49,6 +49,32 @@ export async function getConversationForNewMessage(userId: string): Promise<Conv
   return getConversationForPair(pair.host.id, pair.guest.id);
 }
 
+/**
+ * A chat removed from the Host's list must come back the moment anyone sends a
+ * message in it. Shared by the REST and Socket.IO send paths so both behave
+ * identically. Returns true only when a hidden chat was actually restored.
+ */
+export async function reactivateHiddenConversation(conversation: Conversation): Promise<boolean> {
+  if (!conversation.hostHiddenAt) return false;
+
+  await prisma.conversation.update({
+    where: { id: conversation.id },
+    data: { hostHiddenAt: null }
+  });
+
+  // Make the returning sender the Host's active peer, otherwise the Host can
+  // still ignore the incoming message as belonging to another conversation.
+  if (conversation.hostId && conversation.guestId) {
+    await prisma.userPreference.upsert({
+      where: { userId: conversation.hostId },
+      create: { userId: conversation.hostId, activePeerId: conversation.guestId },
+      update: { activePeerId: conversation.guestId }
+    });
+  }
+
+  return true;
+}
+
 export async function findRestorableConversation(
   hostId: string,
   guestId: string

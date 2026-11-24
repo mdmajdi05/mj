@@ -16,7 +16,8 @@ import {
   findConversationFor,
   findRestorableConversation,
   getConversationForNewMessage,
-  getConversationSummary
+  getConversationSummary,
+  reactivateHiddenConversation
 } from '../services/conversations';
 import { contactsFor, pairFor, peerFor, selectPeer } from '../services/peer';
 import { notifyUser, emitToUser } from '../services/notifier';
@@ -300,21 +301,10 @@ chatRouter.post(
       throw error;
     });
     // A chat removed from the Host's list comes back as soon as either side
-    // sends a new message. Make the returning sender the Host's active peer so
-    // the message is actually opened instead of being ignored as off-peer.
-    if (conversation.hostHiddenAt) {
-      await prisma.conversation.update({
-        where: { id: conversation.id },
-        data: { hostHiddenAt: null }
-      });
-      if (conversation.hostId && conversation.guestId) {
-        await prisma.userPreference.upsert({
-          where: { userId: conversation.hostId },
-          create: { userId: conversation.hostId, activePeerId: conversation.guestId },
-          update: { activePeerId: conversation.guestId }
-        });
-        emitToUser(conversation.hostId, 'contacts:updated', {});
-      }
+    // sends a new message. The shared helper also selects the returning sender
+    // as the Host's active peer so the message is actually opened.
+    if (await reactivateHiddenConversation(conversation)) {
+      if (conversation.hostId) emitToUser(conversation.hostId, 'contacts:updated', {});
     }
     const replyToId = parsed.data.replyToId ?? null;
     if (replyToId) {

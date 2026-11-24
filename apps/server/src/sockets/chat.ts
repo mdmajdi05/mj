@@ -10,7 +10,8 @@ import { writeAudit } from '../lib/audit';
 import type { AuthUser } from '../middleware/auth';
 import {
   getConversationForNewMessage,
-  findRestorableConversation
+  findRestorableConversation,
+  reactivateHiddenConversation
 } from '../services/conversations';
 import { pairFor, peerFor } from '../services/peer';
 import { emitToUser, notifyUser } from '../services/notifier';
@@ -160,6 +161,12 @@ export function registerChatSocketHandlers(io: Server, socket: Socket) {
           : 'Message could not be sent.'
       );
       return;
+    }
+
+    // This is the path the chat UI actually uses. A removed chat must come
+    // back here too, not just in the REST fallback.
+    if (await reactivateHiddenConversation(conversation)) {
+      if (conversation.hostId) emitToUser(conversation.hostId, 'contacts:updated', {});
     }
 
     let replyToId: string | null = null;
