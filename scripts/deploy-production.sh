@@ -310,6 +310,14 @@ GUEST_INITIAL_PASSWORD="$(get_env GUEST_INITIAL_PASSWORD)"
 [ -n "$GUEST_INITIAL_PASSWORD" ] || GUEST_INITIAL_PASSWORD="$(rand_hex 18)"
 SESSION_DAYS="$(get_env SESSION_DAYS)"
 [ -n "$SESSION_DAYS" ] || SESSION_DAYS="7"
+MAX_UPLOAD_MB="$(get_env MAX_UPLOAD_MB)"
+[ -n "$MAX_UPLOAD_MB" ] || MAX_UPLOAD_MB="1024"
+case "$MAX_UPLOAD_MB" in
+  ''|*[!0-9]*) MAX_UPLOAD_MB="1024" ;;
+esac
+if [ "$MAX_UPLOAD_MB" -lt 1 ] || [ "$MAX_UPLOAD_MB" -gt 1024 ]; then
+  MAX_UPLOAD_MB="1024"
+fi
 
 VAPID_PUBLIC_KEY="$(get_env VAPID_PUBLIC_KEY)"
 VAPID_PRIVATE_KEY="$(get_env VAPID_PRIVATE_KEY)"
@@ -472,6 +480,7 @@ umask 077
   printf 'GUEST_INITIAL_PASSWORD=%s\n' "$GUEST_INITIAL_PASSWORD"
   printf 'INITIAL_PROMO_CODE=%s\n' "$INITIAL_PROMO_CODE"
   printf 'SESSION_DAYS=%s\n' "$SESSION_DAYS"
+  printf 'MAX_UPLOAD_MB=%s\n' "$MAX_UPLOAD_MB"
   printf 'NEXT_PUBLIC_API_URL=\n'
   printf 'NEXT_PUBLIC_TURN_URL=turn:%s:%s?transport=udp\n' "$DOMAIN" "$TURN_PORT"
   printf 'NEXT_PUBLIC_TURN_USERNAME=private-duo\n'
@@ -634,7 +643,7 @@ server {
   listen 80;
   listen [::]:80;
   server_name $DOMAIN;
-  client_max_body_size 210m;
+  client_max_body_size ${MAX_UPLOAD_MB}m;
   server_tokens off;
 
   location /.well-known/acme-challenge/ {
@@ -669,7 +678,7 @@ server {
   listen 80;
   listen [::]:80;
   server_name $DOMAIN;
-  client_max_body_size 210m;
+  client_max_body_size ${MAX_UPLOAD_MB}m;
   server_tokens off;
 
   location /.well-known/acme-challenge/ {
@@ -683,7 +692,7 @@ server {
   listen 443 ssl http2;
   listen [::]:443 ssl http2;
   server_name $DOMAIN;
-  client_max_body_size 210m;
+  client_max_body_size ${MAX_UPLOAD_MB}m;
   server_tokens off;
 
   ssl_certificate "$CERTBOT_DIR/conf/live/$DOMAIN/fullchain.pem";

@@ -11,9 +11,13 @@ import {
   BookOpen,
   Check,
   ChevronDown,
+  Database,
   Gamepad2,
+  HardDrive,
   History,
+  Inbox,
   ListChecks,
+  Menu,
   MessageCircle,
   Mic,
   Pencil,
@@ -33,6 +37,7 @@ import { useDuo } from '@/hooks/useDuoApp';
 import type {
   AdminActivity,
   AdminConversation,
+  AdminStats,
   CallRecord,
   GameMessage,
   Message,
@@ -218,6 +223,8 @@ export function AdminScreen() {
   const duo = useDuo();
   const [tab, setTab] = useState<Tab>('overview');
   const [activity, setActivity] = useState<AdminActivity | null>(null);
+  const [statsData, setStatsData] = useState<AdminStats | null>(null);
+  const [navOpen, setNavOpen] = useState(false);
   const [messages, setMessages] = useState<AdminMessage[]>([]);
   const [deletedMessages, setDeletedMessages] = useState<AdminDeletedMessage[]>([]);
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
@@ -270,6 +277,7 @@ export function AdminScreen() {
       if (to) params.set('to', to);
       const queryString = params.toString();
       const [
+        statsResult,
         activityResult,
         messagesResult,
         deletedResult,
@@ -280,6 +288,7 @@ export function AdminScreen() {
         notificationResult,
         deletedUsersResult
       ] = await Promise.allSettled([
+        api<AdminStats>('/chat/admin/stats'),
         api<AdminActivity>('/chat/admin/activity'),
         api<AdminMessage[]>(`/chat/admin/messages${queryString ? `?${queryString}` : ''}`),
         api<AdminDeletedMessage[]>('/chat/admin/deleted-messages'),
@@ -290,6 +299,7 @@ export function AdminScreen() {
         api<NotificationFeatureState>('/chat/admin/notification-settings'),
         api<AdminDeletedUser[]>('/chat/admin/users/deleted')
       ]);
+      if (statsResult.status === 'fulfilled') setStatsData(statsResult.value);
       if (activityResult.status === 'fulfilled') setActivity(activityResult.value);
       if (messagesResult.status === 'fulfilled') setMessages(messagesResult.value);
       if (deletedResult.status === 'fulfilled') setDeletedMessages(deletedResult.value);
@@ -313,15 +323,19 @@ export function AdminScreen() {
     void duo.loadPermissions();
   }, [refresh, duo.loadPermissions]);
 
-  const stats = useMemo(() => {
-    return {
-      messages: messages.length,
-      gameMessages: gameMessages.length,
-      calls: activity?.calls.length || 0,
-      permissions: duo.permissions.length,
-      active: duo.permissions.filter((permission) => permission.status === 'GRANTED').length
+  useEffect(() => {
+    if (!navOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setNavOpen(false);
     };
-  }, [activity, duo.permissions, gameMessages.length, messages.length]);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [navOpen]);
 
   /** Host only / Guest only filters the chat view to that member's messages. */
   const visibleMessages = useMemo(() => {
@@ -936,15 +950,47 @@ export function AdminScreen() {
 
   return (
     <div className="admin-shell">
-      <aside className="admin-sidebar" aria-label="Admin sections">
+      <button
+        type="button"
+        className="admin-mobile-nav-trigger"
+        onClick={() => setNavOpen(true)}
+        aria-expanded={navOpen}
+        aria-controls="admin-section-nav"
+      >
+        <Menu size={17} />
+        <span>Admin sections</span>
+        <span className="muted ml-auto text-xs">{activeTab.label}</span>
+      </button>
+
+      <button
+        type="button"
+        className={`admin-nav-backdrop ${navOpen ? 'is-visible' : ''}`}
+        onClick={() => setNavOpen(false)}
+        aria-label="Close admin navigation"
+        tabIndex={navOpen ? 0 : -1}
+      />
+
+      <aside
+        id="admin-section-nav"
+        className={`admin-sidebar ${navOpen ? 'is-open' : ''}`}
+        aria-label="Admin sections"
+      >
         <div className="admin-sidebar-brand">
           <span className="admin-sidebar-mark">
             <Shield size={17} />
           </span>
-          <span>
-            <span className="block text-sm font-semibold">Admin console</span>
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-semibold">Admin console</span>
             <span className="muted block text-[11px]">Host · private workspace</span>
           </span>
+          <button
+            type="button"
+            className="admin-sidebar-close"
+            onClick={() => setNavOpen(false)}
+            aria-label="Close admin navigation"
+          >
+            <X size={17} />
+          </button>
         </div>
         {tabGroups.map((group) => (
           <div key={group} className="admin-nav-group">
@@ -956,7 +1002,10 @@ export function AdminScreen() {
                   key={item.id}
                   type="button"
                   className={`admin-nav-item ${tab === item.id ? 'is-active' : ''}`}
-                  onClick={() => setTab(item.id)}
+                  onClick={() => {
+                    setTab(item.id);
+                    setNavOpen(false);
+                  }}
                   aria-current={tab === item.id ? 'page' : undefined}
                 >
                   <span className="admin-nav-icon">{item.icon}</span>
@@ -994,12 +1043,118 @@ export function AdminScreen() {
 
       {tab === 'overview' && (
         <div className="grid gap-4">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <StatCard label="Chat messages" value={String(stats.messages)} />
-            <StatCard label="Game messages" value={String(stats.gameMessages)} />
-            <StatCard label="Calls logged" value={String(stats.calls)} />
-            <StatCard label="Active permissions" value={String(stats.active)} />
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <StatCard
+              label="Active chat messages"
+              value={formatCount(statsData?.activeChatMessages)}
+              detail={`${formatCount(statsData?.chatMessages)} total · ${formatCount(
+                statsData?.recycledChatMessages
+              )} recycled`}
+              icon={<MessageCircle size={15} />}
+              tone="accent"
+            />
+            <StatCard
+              label="Recycle Bin"
+              value={formatCount(statsData?.recycledChatMessages)}
+              detail={`${formatCount(statsData?.hiddenChatMessages)} hidden copies`}
+              icon={<RotateCcw size={15} />}
+              tone="warn"
+            />
+            <StatCard
+              label="Game messages"
+              value={formatCount(statsData?.gameMessages)}
+              detail="Game Chat history"
+              icon={<Gamepad2 size={15} />}
+            />
+            <StatCard
+              label="Calls logged"
+              value={formatCount(statsData?.calls)}
+              detail={`${formatCount(statsData?.activeCalls)} active now`}
+              icon={<Phone size={15} />}
+            />
+            <StatCard
+              label="Active users"
+              value={formatCount(statsData?.users)}
+              detail={`${formatCount(statsData?.deletedUsers)} in user recycle bin`}
+              icon={<Users size={15} />}
+            />
+            <StatCard
+              label="Conversations"
+              value={formatCount(statsData?.conversations)}
+              detail="Excludes removed chats"
+              icon={<Database size={15} />}
+            />
+            <StatCard
+              label="Active permissions"
+              value={formatCount(statsData?.grantedPermissions)}
+              detail={`${formatCount(statsData?.pendingPermissions)} awaiting review`}
+              icon={<Shield size={15} />}
+            />
+            <StatCard
+              label="Notifications"
+              value={formatCount(statsData?.notifications)}
+              detail={`${formatCount(statsData?.unreadNotifications)} unread`}
+              icon={<Bell size={15} />}
+            />
           </div>
+
+          <Panel className="p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="eyebrow">Workspace</p>
+                <h3 className="mt-1 text-lg font-semibold">Quick actions</h3>
+                <p className="muted mt-1 text-xs leading-5">
+                  Every section stays available in the sidebar. These are shortcuts to the actions
+                  Hosts use most.
+                </p>
+              </div>
+              <Badge tone={statsData ? 'good' : 'warn'}>
+                {statsData ? 'Live database snapshot' : 'Loading snapshot'}
+              </Badge>
+            </div>
+            <div className="admin-quick-grid mt-4">
+              <button type="button" onClick={() => setTab('chat')}>
+                <MessageCircle size={16} />
+                <span>
+                  <strong>Delete messages</strong>
+                  <small>Filter a chat by date and remove selected copies.</small>
+                </span>
+              </button>
+              <button type="button" onClick={() => setTab('deleted')}>
+                <Inbox size={16} />
+                <span>
+                  <strong>Review Recycle Bin</strong>
+                  <small>Restore or purge deleted messages chat by chat.</small>
+                </span>
+              </button>
+              <button type="button" onClick={() => setTab('users')}>
+                <Users size={16} />
+                <span>
+                  <strong>Manage users</strong>
+                  <small>Reset passwords, recover or remove accounts.</small>
+                </span>
+              </button>
+              <button type="button" onClick={() => setTab('activity')}>
+                <HardDrive size={16} />
+                <span>
+                  <strong>Audit activity</strong>
+                  <small>Check notifications, sessions, calls and admin logs.</small>
+                </span>
+              </button>
+            </div>
+            <div className="mt-4 grid gap-2 sm:grid-cols-3">
+              <Row label="Media files" value={formatCount(statsData?.mediaFiles)} />
+              <Row label="Media storage" value={formatStorage(statsData?.mediaBytes)} />
+              <Row
+                label="Snapshot"
+                value={
+                  statsData?.generatedAt
+                    ? formatDateTime(statsData.generatedAt)
+                    : 'Waiting for server'
+                }
+              />
+            </div>
+          </Panel>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Panel className="p-5">
@@ -2527,11 +2682,41 @@ export function AdminScreen() {
   );
 }
 
-function StatCard({ label, value }: { label: string; value: string }) {
+function formatCount(value?: number) {
+  return typeof value === 'number' ? new Intl.NumberFormat().format(value) : '—';
+}
+
+function formatStorage(bytes?: number) {
+  if (typeof bytes !== 'number') return '—';
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+
+function StatCard({
+  label,
+  value,
+  detail,
+  icon,
+  tone = 'neutral'
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+  icon?: React.ReactNode;
+  tone?: 'neutral' | 'accent' | 'warn';
+}) {
   return (
-    <div className="panel-soft p-4">
-      <p className="muted text-[10px] uppercase tracking-wider">{label}</p>
-      <p className="mt-1 text-2xl font-semibold">{value}</p>
+    <div className={`admin-stat-card admin-stat-${tone}`}>
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-white/45">
+          {label}
+        </p>
+        {icon && <span className="admin-stat-icon">{icon}</span>}
+      </div>
+      <p className="mt-2 text-2xl font-semibold tracking-tight text-white">{value}</p>
+      {detail && <p className="muted mt-1 text-[11px] leading-4">{detail}</p>}
     </div>
   );
 }

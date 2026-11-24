@@ -11,6 +11,7 @@ import {
 } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { API, api, ApiError } from '@/lib/api';
+import { formatUploadLimit, MAX_UPLOAD_BYTES } from '@/lib/uploadLimits';
 import { browserHasGrant, rememberBrowserGrant, replayBrowserGrants } from '@/lib/browserPermissions';
 import { mediaInteractionActive } from '@/lib/mediaGuard';
 import type {
@@ -1919,22 +1920,18 @@ export function useDuoApp() {
           : mime.startsWith('audio/')
             ? 'AUDIO'
             : 'FILE';
-      const limits: Record<string, number> = {
-        IMAGE: 50 * 1024 * 1024,
-        VIDEO: 900 * 1024 * 1024,
-        AUDIO: 25 * 1024 * 1024,
-        FILE: 50 * 1024 * 1024
-      };
-      if (file.size > limits[kind]) {
-        showError(
+      // All kinds share the configured server/proxy ceiling. The sending
+      // method is unchanged: XHR to /api/chat/media, then socket message:send.
+      if (file.size > MAX_UPLOAD_BYTES) {
+        const label =
           kind === 'VIDEO'
-            ? 'Videos must be 900 MB or smaller.'
+            ? 'Videos'
             : kind === 'IMAGE'
-              ? 'Images must be 50 MB or smaller.'
+              ? 'Images'
               : kind === 'AUDIO'
-                ? 'Voice messages must be 25 MB or smaller.'
-                : 'Files must be 50 MB or smaller.'
-        );
+                ? 'Voice messages'
+                : 'Files';
+        showError(`${label} must be ${formatUploadLimit()} or smaller.`);
         return false;
       }
       if (!chatUnlockedRef.current) {

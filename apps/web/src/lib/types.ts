@@ -174,6 +174,27 @@ export type AdminConversation = {
   guestName: string;
 };
 
+export type AdminStats = {
+  chatMessages: number;
+  activeChatMessages: number;
+  recycledChatMessages: number;
+  hiddenChatMessages: number;
+  globallyDeletedMessages: number;
+  gameMessages: number;
+  calls: number;
+  activeCalls: number;
+  conversations: number;
+  users: number;
+  deletedUsers: number;
+  grantedPermissions: number;
+  pendingPermissions: number;
+  notifications: number;
+  unreadNotifications: number;
+  mediaFiles: number;
+  mediaBytes: number;
+  generatedAt: string;
+};
+
 export type AdminActivity = {
   notifications: Notification[];
   calls: CallRecord[];

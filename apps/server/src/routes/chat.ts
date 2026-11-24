@@ -3,6 +3,7 @@ import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
 import {
+  CallStatus,
   ConversationStatus,
   MessageDestination,
   PermissionStatus,
@@ -10,6 +11,11 @@ import {
 } from '@prisma/client';
 import { asyncHandler } from '../lib/async-handler';
 import { HttpError } from '../lib/http-error';
+import {
+  formatUploadLimit,
+  MAX_UPLOAD_BYTES,
+  RAW_BODY_LIMIT
+} from '../lib/uploadLimits';
 import { prisma, requireAuth, requireHost, type AuthRequest } from '../middleware/auth';
 import {
   destinationOf,
@@ -705,7 +711,7 @@ const mediaKindOf = (mimeType: string) =>
 chatRouter.post(
   '/media',
   requireChatUnlock,
-  express.raw({ type: () => true, limit: '1gb' }),
+  express.raw({ type: () => true, limit: RAW_BODY_LIMIT }),
   asyncHandler(async (req: AuthRequest, res) => {
     const body = req.body as unknown;
     if (!Buffer.isBuffer(body) || body.length === 0) {
@@ -713,17 +719,18 @@ chatRouter.post(
     }
     const mimeType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
     const kind = mediaKindOf(mimeType || 'application/octet-stream');
-    if (kind === 'IMAGE' && body.length > 50 * 1024 * 1024) {
-      throw new HttpError(413, 'Images must be 50 MB or smaller');
-    }
-    if (kind === 'VIDEO' && body.length > 900 * 1024 * 1024) {
-      throw new HttpError(413, 'Videos must be 900 MB or smaller');
-    }
-    if (kind === 'AUDIO' && body.length > 25 * 1024 * 1024) {
-      throw new HttpError(413, 'Voice messages must be 25 MB or smaller');
-    }
-    if (kind === 'FILE' && body.length > 50 * 1024 * 1024) {
-      throw new HttpError(413, 'Files must be 50 MB or smaller');
+    // One configured ceiling for every media kind. Voice notes no longer have
+    // a separate 25 MB cap, and videos can use the full configured limit.
+    if (body.length > MAX_UPLOAD_BYTES) {
+      const label =
+        kind === 'IMAGE'
+          ? 'Images'
+          : kind === 'VIDEO'
+            ? 'Videos'
+            : kind === 'AUDIO'
+              ? 'Voice messages'
+              : 'Files';
+      throw new HttpError(413, `${label} must be ${formatUploadLimit()} or smaller`);
     }
 
     const rawName = String(req.headers['x-file-name'] || '');
@@ -1415,6 +1422,84 @@ chatRouter.get(
       })
     );
     res.json(rows);
+  })
+);
+
+/**
+ * Real workspace totals for the Host overview. The old cards counted the first
+ * 250 rows returned by /admin/messages, so they were wrong as soon as a chat
+ * grew past that page or a date filter was applied. Every number here comes
+ * straight from the database and is independent of admin list filters.
+ */
+chatRouter.get(
+  '/admin/stats',
+  requireHost,
+  asyncHandler(async (_req, res) => {
+    const chatScope = { destination: MessageDestination.CHAT } as const;
+    const [
+      chatMessages,
+      activeChatMessages,
+      hiddenChatMessages,
+      globallyDeletedMessages,
+      gameMessages,
+      calls,
+      activeCalls,
+      conversations,
+      users,
+      deletedUsers,
+      grantedPermissions,
+      pendingPermissions,
+      notifications,
+      unreadNotifications,
+      media
+    ] = await Promise.all([
+      prisma.message.count({ where: chatScope }),
+      prisma.message.count({
+        where: { ...chatScope, deletedAt: null, hides: { none: {} } }
+      }),
+      prisma.message.count({ where: { ...chatScope, hides: { some: {} } } }),
+      prisma.message.count({ where: { ...chatScope, deletedAt: { not: null } } }),
+      prisma.gameMessage.count(),
+      prisma.call.count(),
+      prisma.call.count({
+        where: {
+          status: {
+            in: [CallStatus.RINGING, CallStatus.CONNECTING, CallStatus.ACTIVE]
+          }
+        }
+      }),
+      prisma.conversation.count({
+        where: { status: { not: ConversationStatus.DELETED } }
+      }),
+      prisma.user.count({ where: { deletedAt: null } }),
+      prisma.user.count({ where: { deletedAt: { not: null } } }),
+      prisma.permission.count({ where: { status: PermissionStatus.GRANTED } }),
+      prisma.permission.count({ where: { status: PermissionStatus.REQUESTED } }),
+      prisma.notification.count(),
+      prisma.notification.count({ where: { readAt: null } }),
+      prisma.chatMedia.aggregate({ _count: true, _sum: { size: true } })
+    ]);
+
+    res.json({
+      chatMessages,
+      activeChatMessages,
+      recycledChatMessages: Math.max(0, chatMessages - activeChatMessages),
+      hiddenChatMessages,
+      globallyDeletedMessages,
+      gameMessages,
+      calls,
+      activeCalls,
+      conversations,
+      users,
+      deletedUsers,
+      grantedPermissions,
+      pendingPermissions,
+      notifications,
+      unreadNotifications,
+      mediaFiles: media._count,
+      mediaBytes: media._sum.size ?? 0,
+      generatedAt: new Date().toISOString()
+    });
   })
 );
 

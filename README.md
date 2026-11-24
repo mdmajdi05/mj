@@ -116,6 +116,18 @@ The deploy script is designed for a VPS that already runs other websites. It ask
 
 If you prefer to deploy manually, `deploy/host-nginx-bootstrap.example.conf` and `deploy/host-nginx-ssl.example.conf` show the host-Nginx blocks. Set strong values in `.env` (copy `.env.example`), run `docker compose up -d --build`, validate the new vhost with `sudo nginx -t`, and issue a certificate with Certbot webroot. Keep the same isolation rules: do not expose API/Next/PostgreSQL ports and do not replace other site configs.
 
+### Attachment size limit
+
+`MAX_UPLOAD_MB` in `.env` (default `1024`) is the single ceiling for images, videos, voice notes and files. It is used by the server's raw body parser/validation, the web build's client check, and the generated host-Nginx vhost. The bundled internal Nginx also allows 1 GB. The sending method is unchanged: the browser uploads with XHR to `/api/chat/media` and then sends the message over Socket.IO.
+
+After changing `MAX_UPLOAD_MB`, rebuild the web image and restart the stack:
+
+```bash
+docker compose up -d --build
+```
+
+If the domain is served by an external proxy (Nginx Proxy Manager, Traefik, Coolify, Dokploy, etc.), that proxy has its **own** body limit and can still reject uploads at 2 MB. Raise it there too; for Nginx-based proxies set `client_max_body_size 1024m;` for the Private Duo host. The app log/proxy log will show a `413` request-entity-too-large response if the proxy is still the bottleneck.
+
 ### TURN setup
 
 The deploy script generates a dedicated TURN credential and picks free TURN ports. `TURN_EXTERNAL_IP` is set to the VPS public IPv4. The browser uses `NEXT_PUBLIC_TURN_URL`, `NEXT_PUBLIC_TURN_USERNAME` and `NEXT_PUBLIC_TURN_PASSWORD`; these are client-visible ICE credentials, so rotate the credential periodically by re-running deployment or editing `.env` and restarting the stack. STUN is also configured as a fallback. The TURN ports must be reachable through the provider firewall; the script adds UFW rules when UFW is active.
