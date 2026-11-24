@@ -723,7 +723,7 @@ Consequences:
 | Upload | `POST /api/chat/media`, disk via `storageKey` | Reasonable |
 | Legacy path | `ChatMedia.data Bytes?` | Two backends; needs a decision |
 | Ownership on attach | `media.ownerId !== user.id` → error (`chat.ts:109-112`) | ✅ |
-| Size limits | 50 MB image/file, 900 MB video, 25 MB audio (`useDuoApp.ts:1895-1908`) | Client-side only in the audited path |
+| Size limits | Unified `MAX_UPLOAD_MB` (default 1000 MB) for image/video/audio/file; server publishes it via `/api/chat/upload-limit` | Client uses the live server value; sending flow unchanged |
 | Provisioning | `cleanupTemporaryMediaFiles()` | `NOT VERIFIED` (scheduling) |
 | Orphans | Media uploaded but never attached | No visible GC in send flow |
 | Serving | `GET /api/chat/media/:id` | Auth check needs line-level verification (`NOT VERIFIED`) |

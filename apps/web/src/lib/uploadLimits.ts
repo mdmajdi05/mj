@@ -1,13 +1,14 @@
 /**
- * Build-time upload limit shared by every web attachment path.
+ * Build-time fallback for the upload ceiling. The authoritative value is
+ * fetched from /api/chat/upload-limit at runtime, so this only keeps the app
+ * usable before that request completes.
  *
- * The value comes from NEXT_PUBLIC_MAX_UPLOAD_MB so Docker builds and Vercel
- * style deployments can raise it without touching the sending flow. Keep the
- * ceiling at 1 GB because Prisma stores attachment sizes as 32-bit integers and
- * the bundled Nginx proxy allows at most 1 GB request bodies.
+ * Keep the default at 1000 MB: it is comfortably above any reverse-proxy
+ * default, below PostgreSQL BYTEA's practical ceiling, and inside Prisma's
+ * 32-bit Int size column.
  */
-const DEFAULT_MAX_UPLOAD_MB = 1024;
-const MIN_MAX_UPLOAD_MB = 1;
+const DEFAULT_MAX_UPLOAD_MB = 1000;
+const MIN_MAX_UPLOAD_MB = 100;
 const ABSOLUTE_MAX_UPLOAD_MB = 1024;
 
 function parseLimit(value: string | undefined): number {
@@ -22,7 +23,11 @@ function parseLimit(value: string | undefined): number {
 export const MAX_UPLOAD_MB = parseLimit(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB);
 export const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 
+export function formatUploadLimitFromMb(mb: number) {
+  if (mb >= 1024) return `${Math.floor(mb / 1024)} GB`;
+  return `${mb} MB`;
+}
+
 export function formatUploadLimit() {
-  if (MAX_UPLOAD_MB >= 1024) return `${Math.floor(MAX_UPLOAD_MB / 1024)} GB`;
-  return `${MAX_UPLOAD_MB} MB`;
+  return formatUploadLimitFromMb(MAX_UPLOAD_MB);
 }

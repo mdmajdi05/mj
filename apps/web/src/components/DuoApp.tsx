@@ -67,11 +67,14 @@ function DuoShell({ hostMode }: { hostMode: boolean }) {
   if (!duo.user && duo.authOpen) return <LoginScreen />;
 
   const immersive = duo.screen === 'CHAT' || duo.screen === 'STUDY';
+  // The Host console is a workspace, not a reading column. Let it use the full
+  // width so the sidebar, KPI grid and chat-style Recycle Bin have real room.
+  const wide = immersive || duo.screen === 'ADMIN';
 
   return (
     <div className="shell">
       <div
-        className={`mx-auto w-full max-w-3xl px-3 pt-2 md:px-6 ${
+        className={`mx-auto w-full ${wide ? 'max-w-none' : 'max-w-3xl'} px-3 pt-2 md:px-6 ${
           immersive ? 'app-frame-chat' : 'min-h-screen pb-10'
         }`}
       >

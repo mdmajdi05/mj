@@ -11,7 +11,11 @@ import {
 } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { API, api, ApiError } from '@/lib/api';
-import { formatUploadLimit, MAX_UPLOAD_BYTES } from '@/lib/uploadLimits';
+import {
+  formatUploadLimitFromMb,
+  MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_MB
+} from '@/lib/uploadLimits';
 import { browserHasGrant, rememberBrowserGrant, replayBrowserGrants } from '@/lib/browserPermissions';
 import { mediaInteractionActive } from '@/lib/mediaGuard';
 import type {
@@ -103,6 +107,10 @@ export function useDuoApp() {
   const [callStartedAt, setCallStartedAt] = useState<number | null>(null);
   const [guestMicConsent, setGuestMicConsentState] = useState(false);
   const [chatSessionUnlocked, setChatSessionUnlocked] = useState(false);
+  const [uploadLimit, setUploadLimit] = useState({
+    mb: MAX_UPLOAD_MB,
+    bytes: MAX_UPLOAD_BYTES
+  });
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
@@ -458,6 +466,28 @@ export function useDuoApp() {
       loadSummary()
     ]);
   }, [loadMessages, loadInbox, loadPermissions, loadNotifications, loadSummary]);
+
+  // The server owns the real ceiling; the build-time constant is only a
+  // fallback for the first render. This keeps video and voice notes aligned
+  // with the deployed Express/Nginx configuration.
+  useEffect(() => {
+    let active = true;
+    api<{ maxUploadMb: number; maxUploadBytes: number }>('/chat/upload-limit')
+      .then((limit) => {
+        if (!active) return;
+        if (
+          Number.isFinite(limit.maxUploadBytes) &&
+          Number.isFinite(limit.maxUploadMb) &&
+          limit.maxUploadBytes > 0
+        ) {
+          setUploadLimit({ mb: limit.maxUploadMb, bytes: limit.maxUploadBytes });
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [user?.id]);
 
   const openAuth = useCallback(() => {
     setAuthOpen(true);
@@ -1920,9 +1950,9 @@ export function useDuoApp() {
           : mime.startsWith('audio/')
             ? 'AUDIO'
             : 'FILE';
-      // All kinds share the configured server/proxy ceiling. The sending
-      // method is unchanged: XHR to /api/chat/media, then socket message:send.
-      if (file.size > MAX_UPLOAD_BYTES) {
+      // All kinds share the server's live ceiling. The sending method is
+      // unchanged: XHR to /api/chat/media, then socket message:send.
+      if (file.size > uploadLimit.bytes) {
         const label =
           kind === 'VIDEO'
             ? 'Videos'
@@ -1931,7 +1961,9 @@ export function useDuoApp() {
               : kind === 'AUDIO'
                 ? 'Voice messages'
                 : 'Files';
-        showError(`${label} must be ${formatUploadLimit()} or smaller.`);
+        showError(
+          `${label} must be ${formatUploadLimitFromMb(uploadLimit.mb)} or smaller.`
+        );
         return false;
       }
       if (!chatUnlockedRef.current) {
@@ -2031,7 +2063,7 @@ export function useDuoApp() {
         return false;
       }
     },
-    [showError]
+    [showError, uploadLimit]
   );
 
   /** Edits one of this account's own messages within the 5 minute window. */

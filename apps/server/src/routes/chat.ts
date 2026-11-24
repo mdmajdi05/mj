@@ -14,6 +14,7 @@ import { HttpError } from '../lib/http-error';
 import {
   formatUploadLimit,
   MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_MB,
   RAW_BODY_LIMIT
 } from '../lib/uploadLimits';
 import { prisma, requireAuth, requireHost, type AuthRequest } from '../middleware/auth';
@@ -707,6 +708,14 @@ const mediaKindOf = (mimeType: string) =>
       : mimeType.startsWith('audio/')
         ? 'AUDIO'
         : 'FILE';
+
+/** The browser asks for the authoritative limit instead of trusting its build. */
+chatRouter.get(
+  '/upload-limit',
+  asyncHandler(async (_req, res) => {
+    res.json({ maxUploadMb: MAX_UPLOAD_MB, maxUploadBytes: MAX_UPLOAD_BYTES });
+  })
+);
 
 chatRouter.post(
   '/media',
@@ -1498,6 +1507,7 @@ chatRouter.get(
       unreadNotifications,
       mediaFiles: media._count,
       mediaBytes: media._sum.size ?? 0,
+      uploadLimitMb: MAX_UPLOAD_MB,
       generatedAt: new Date().toISOString()
     });
   })

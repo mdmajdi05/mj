@@ -118,15 +118,21 @@ If you prefer to deploy manually, `deploy/host-nginx-bootstrap.example.conf` and
 
 ### Attachment size limit
 
-`MAX_UPLOAD_MB` in `.env` (default `1024`) is the single ceiling for images, videos, voice notes and files. It is used by the server's raw body parser/validation, the web build's client check, and the generated host-Nginx vhost. The bundled internal Nginx also allows 1 GB. The sending method is unchanged: the browser uploads with XHR to `/api/chat/media` and then sends the message over Socket.IO.
+`MAX_UPLOAD_MB` in `.env` (default `1000`, minimum `100`) is the single ceiling for images, videos, voice notes and files. The Express raw parser validates against it, the generated host-Nginx vhost and bundled internal Nginx allow it, and the server publishes it at `GET /api/chat/upload-limit`. The browser fetches that endpoint at runtime, so a stale Next.js build cannot reintroduce an old cap. The sending method is unchanged: XHR to `/api/chat/media`, then a Socket.IO `message:send` with only the attachment id.
 
-After changing `MAX_UPLOAD_MB`, rebuild the web image and restart the stack:
+After changing `MAX_UPLOAD_MB`, rebuild and recreate the stack:
 
 ```bash
 docker compose up -d --build
+docker compose up -d --force-recreate nginx
 ```
 
-If the domain is served by an external proxy (Nginx Proxy Manager, Traefik, Coolify, Dokploy, etc.), that proxy has its **own** body limit and can still reject uploads at 2 MB. Raise it there too; for Nginx-based proxies set `client_max_body_size 1024m;` for the Private Duo host. The app log/proxy log will show a `413` request-entity-too-large response if the proxy is still the bottleneck.
+`scripts/deploy-production.sh` does both automatically and reloads host Nginx.
+
+If the domain is served by an external proxy (Nginx Proxy Manager, Traefik, Coolify, Dokploy, etc.), that proxy has its **own** body limit and can still reject uploads at 2 MB. NPM defaults to 2 MB. Raise it for the Private Duo host; for Nginx-based proxies set `client_max_body_size 1000m;` in the public server/location block. Diagnostics:
+
+- `413` with an HTML `nginx` body → proxy is still the bottleneck.
+- `413` JSON like `{"error":"Videos must be 1000 MB or smaller"}` → Express rejected it; the app/proxy limits are out of sync.
 
 ### TURN setup
 

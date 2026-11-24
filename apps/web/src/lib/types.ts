@@ -192,6 +192,7 @@ export type AdminStats = {
   unreadNotifications: number;
   mediaFiles: number;
   mediaBytes: number;
+  uploadLimitMb: number;
   generatedAt: string;
 };
 

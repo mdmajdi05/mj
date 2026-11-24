@@ -311,12 +311,13 @@ GUEST_INITIAL_PASSWORD="$(get_env GUEST_INITIAL_PASSWORD)"
 SESSION_DAYS="$(get_env SESSION_DAYS)"
 [ -n "$SESSION_DAYS" ] || SESSION_DAYS="7"
 MAX_UPLOAD_MB="$(get_env MAX_UPLOAD_MB)"
-[ -n "$MAX_UPLOAD_MB" ] || MAX_UPLOAD_MB="1024"
+[ -n "$MAX_UPLOAD_MB" ] || MAX_UPLOAD_MB="1000"
 case "$MAX_UPLOAD_MB" in
-  ''|*[!0-9]*) MAX_UPLOAD_MB="1024" ;;
+  ''|*[!0-9]*) MAX_UPLOAD_MB="1000" ;;
 esac
-if [ "$MAX_UPLOAD_MB" -lt 1 ] || [ "$MAX_UPLOAD_MB" -gt 1024 ]; then
-  MAX_UPLOAD_MB="1024"
+if [ "$MAX_UPLOAD_MB" -lt 100 ] || [ "$MAX_UPLOAD_MB" -gt 1024 ]; then
+  warn "MAX_UPLOAD_MB=$MAX_UPLOAD_MB is outside the safe 100-1024 range; using 1000."
+  MAX_UPLOAD_MB="1000"
 fi
 
 VAPID_PUBLIC_KEY="$(get_env VAPID_PUBLIC_KEY)"
@@ -518,6 +519,14 @@ log "Building and starting the Private Duo Docker stack (this can take several m
 if ! compose up -d --build; then
   compose logs --tail=120 >&2 || true
   die "docker compose up failed. Existing websites and containers were not changed."
+fi
+
+# A bind-mounted nginx.conf change does not reload a running container by
+# itself. Recreate this project's nginx only so the new body limit takes effect.
+info "Reloading the internal Nginx body-size limit..."
+if ! compose up -d --force-recreate nginx; then
+  compose logs --tail=60 nginx >&2 || true
+  die "Could not reload the internal Nginx. Upload limits may still be stale."
 fi
 
 wait_for_health() {

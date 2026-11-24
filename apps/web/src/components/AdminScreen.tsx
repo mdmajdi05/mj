@@ -44,6 +44,7 @@ import type {
   Permission
 } from '@/lib/types';
 import { formatDateTime, eventLabel } from '@/lib/utils';
+import { formatUploadLimitFromMb } from '@/lib/uploadLimits';
 import { Badge, Button, EmptyState, Field, Modal, Panel, Toggle } from '@/components/ui';
 
 type AdminMessage = Message & { conversation?: { id?: string; status: string } };
@@ -1042,77 +1043,58 @@ export function AdminScreen() {
         </header>
 
       {tab === 'overview' && (
-        <div className="grid gap-4">
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <StatCard
-              label="Active chat messages"
-              value={formatCount(statsData?.activeChatMessages)}
-              detail={`${formatCount(statsData?.chatMessages)} total · ${formatCount(
-                statsData?.recycledChatMessages
-              )} recycled`}
-              icon={<MessageCircle size={15} />}
-              tone="accent"
-            />
-            <StatCard
-              label="Recycle Bin"
-              value={formatCount(statsData?.recycledChatMessages)}
-              detail={`${formatCount(statsData?.hiddenChatMessages)} hidden copies`}
-              icon={<RotateCcw size={15} />}
-              tone="warn"
-            />
-            <StatCard
-              label="Game messages"
-              value={formatCount(statsData?.gameMessages)}
-              detail="Game Chat history"
-              icon={<Gamepad2 size={15} />}
-            />
-            <StatCard
-              label="Calls logged"
-              value={formatCount(statsData?.calls)}
-              detail={`${formatCount(statsData?.activeCalls)} active now`}
-              icon={<Phone size={15} />}
-            />
-            <StatCard
-              label="Active users"
-              value={formatCount(statsData?.users)}
-              detail={`${formatCount(statsData?.deletedUsers)} in user recycle bin`}
-              icon={<Users size={15} />}
-            />
-            <StatCard
-              label="Conversations"
-              value={formatCount(statsData?.conversations)}
-              detail="Excludes removed chats"
-              icon={<Database size={15} />}
-            />
-            <StatCard
-              label="Active permissions"
-              value={formatCount(statsData?.grantedPermissions)}
-              detail={`${formatCount(statsData?.pendingPermissions)} awaiting review`}
-              icon={<Shield size={15} />}
-            />
-            <StatCard
-              label="Notifications"
-              value={formatCount(statsData?.notifications)}
-              detail={`${formatCount(statsData?.unreadNotifications)} unread`}
-              icon={<Bell size={15} />}
-            />
-          </div>
-
-          <Panel className="p-5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="eyebrow">Workspace</p>
-                <h3 className="mt-1 text-lg font-semibold">Quick actions</h3>
-                <p className="muted mt-1 text-xs leading-5">
-                  Every section stays available in the sidebar. These are shortcuts to the actions
-                  Hosts use most.
-                </p>
+        <div className="admin-overview">
+          <section className="admin-overview-primary" aria-label="Workspace health">
+            <div className="admin-overview-title">
+              <div className="min-w-0">
+                <p className="eyebrow">At a glance</p>
+                <h2 className="mt-1 text-base font-semibold tracking-tight">Workspace health</h2>
               </div>
               <Badge tone={statsData ? 'good' : 'warn'}>
                 {statsData ? 'Live database snapshot' : 'Loading snapshot'}
               </Badge>
             </div>
-            <div className="admin-quick-grid mt-4">
+            <div className="admin-kpi-grid">
+              <StatCard
+                label="Active chat messages"
+                value={formatCount(statsData?.activeChatMessages)}
+                detail={`${formatCount(statsData?.chatMessages)} total · ${formatCount(
+                  statsData?.recycledChatMessages
+                )} recycled`}
+                icon={<MessageCircle size={15} />}
+                tone="accent"
+              />
+              <StatCard
+                label="Recycle Bin"
+                value={formatCount(statsData?.recycledChatMessages)}
+                detail={`${formatCount(statsData?.hiddenChatMessages)} hidden copies`}
+                icon={<RotateCcw size={15} />}
+                tone="warn"
+              />
+              <StatCard
+                label="Active users"
+                value={formatCount(statsData?.users)}
+                detail={`${formatCount(statsData?.deletedUsers)} in user recycle bin`}
+                icon={<Users size={15} />}
+              />
+              <StatCard
+                label="Conversations"
+                value={formatCount(statsData?.conversations)}
+                detail="Excludes removed chats"
+                icon={<Database size={15} />}
+              />
+            </div>
+          </section>
+
+          <Panel className="admin-overview-panel">
+            <div className="admin-panel-heading">
+              <div className="min-w-0">
+                <p className="eyebrow">Workspace</p>
+                <h3 className="mt-1 text-sm font-semibold">Quick actions</h3>
+              </div>
+              <span className="muted text-xs">All sections remain in the sidebar.</span>
+            </div>
+            <div className="admin-quick-grid mt-3">
               <button type="button" onClick={() => setTab('chat')}>
                 <MessageCircle size={16} />
                 <span>
@@ -1142,9 +1124,41 @@ export function AdminScreen() {
                 </span>
               </button>
             </div>
-            <div className="mt-4 grid gap-2 sm:grid-cols-3">
+            <div className="admin-metric-strip mt-3">
+              <Row label="Game messages" value={formatCount(statsData?.gameMessages)} />
+              <Row
+                label="Calls logged"
+                value={`${formatCount(statsData?.calls)} · ${formatCount(
+                  statsData?.activeCalls
+                )} active`}
+              />
+              <Row
+                label="Permissions"
+                value={`${formatCount(statsData?.grantedPermissions)} · ${formatCount(
+                  statsData?.pendingPermissions
+                )} pending`}
+              />
+              <Row
+                label="Notifications"
+                value={`${formatCount(statsData?.notifications)} · ${formatCount(
+                  statsData?.unreadNotifications
+                )} unread`}
+              />
+              <Row
+                label="Hidden copies"
+                value={formatCount(statsData?.hiddenChatMessages)}
+              />
+              <Row label="User recycle bin" value={formatCount(statsData?.deletedUsers)} />
               <Row label="Media files" value={formatCount(statsData?.mediaFiles)} />
               <Row label="Media storage" value={formatStorage(statsData?.mediaBytes)} />
+              <Row
+                label="Upload limit"
+                value={
+                  typeof statsData?.uploadLimitMb === 'number'
+                    ? formatUploadLimitFromMb(statsData.uploadLimitMb)
+                    : 'Waiting for server'
+                }
+              />
               <Row
                 label="Snapshot"
                 value={
@@ -1156,11 +1170,15 @@ export function AdminScreen() {
             </div>
           </Panel>
 
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Panel className="p-5">
-              <p className="eyebrow">Live status</p>
-              <h3 className="mt-1 text-lg font-semibold">Participants & call</h3>
-              <div className="mt-3 space-y-2 text-sm">
+          <div className="admin-collapsible-grid">
+            <CollapsibleSection
+              title="Participants & call"
+              description={`${duo.user?.username || 'host'} · ${duo.callState} · mic ${
+                duo.micOn ? 'on' : 'muted'
+              }`}
+              defaultOpen={false}
+            >
+              <div className="space-y-2 text-sm">
                 <Row label="Host" value={duo.user?.username || 'host'} />
                 <Row label="Other participant" value={duo.otherOnline ? 'Online' : 'Offline'} />
                 <Row label="Call state" value={duo.callState} />
@@ -1171,12 +1189,14 @@ export function AdminScreen() {
                 />
                 <Row label="Conversation" value={duo.conversationStatus} />
               </div>
-            </Panel>
+            </CollapsibleSection>
 
-            <Panel className="p-5">
-              <p className="eyebrow">Microphone management</p>
-              <h3 className="mt-1 text-lg font-semibold">Consent-based controls</h3>
-              <p className="muted mt-2 text-xs leading-5">
+            <CollapsibleSection
+              title="Microphone management"
+              description={hostMicGrant ? 'Guest mic control granted' : 'Guest consent required'}
+              defaultOpen={false}
+            >
+              <p className="muted text-xs leading-5">
                 Remote microphone controls work only with an explicit grant from the other
                 participant. Guest can revoke at any time and can always mute locally.
               </p>
@@ -1188,7 +1208,7 @@ export function AdminScreen() {
                   {guestMicGrant ? 'Guest may mute Host mic' : 'Guest → Host mic not granted'}
                 </Badge>
               </div>
-              <div className="mt-4 flex flex-wrap gap-2">
+              <div className="mt-3 flex flex-wrap gap-2">
                 <Button
                   onClick={() =>
                     void duo.requestPermission(
@@ -1224,15 +1244,15 @@ export function AdminScreen() {
                   Request unmute
                 </Button>
               </div>
-            </Panel>
+            </CollapsibleSection>
           </div>
 
-          <Panel className="p-5">
+          <Panel className="admin-overview-panel admin-overview-danger">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
+              <div className="min-w-0">
                 <p className="eyebrow">Destructive authority</p>
-                <h3 className="mt-1 text-lg font-semibold">Conversation history</h3>
-                <p className="muted mt-1 text-sm">
+                <h3 className="mt-1 text-sm font-semibold">Conversation history</h3>
+                <p className="muted mt-1 text-xs leading-5">
                   Hides every Chat message from the Host view only. The User keeps their copy,
                   and you can recover or permanently delete it from the Recycle Bin tab.
                 </p>
@@ -1779,10 +1799,14 @@ export function AdminScreen() {
                   const isHost = message.sender?.role === 'HOST';
                   const senderName =
                     message.sender?.displayName || message.sender?.username || message.senderId;
+                  const hiddenNames =
+                    message.hides
+                      ?.map((hide) => hide.user?.username || 'account')
+                      .join(', ') || '';
                   return (
                     <div
                       key={message.id}
-                      className={`flex items-end gap-2 ${isHost ? 'justify-end' : 'justify-start'}`}
+                      className={`admin-deleted-row ${isHost ? 'is-host' : ''}`}
                     >
                       {!isHost && (
                         <span className="mb-1 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/10 text-[10px] font-semibold uppercase text-white/70">
@@ -1800,7 +1824,7 @@ export function AdminScreen() {
                       )}
                       <div
                         className={[
-                          'relative max-w-[82%] rounded-2xl border px-3.5 py-2.5 shadow-lg sm:max-w-[72%]',
+                          'admin-deleted-bubble relative w-fit min-w-0 max-w-full rounded-2xl border px-3.5 py-2.5 shadow-lg',
                           isHost
                             ? 'rounded-br-md border-amber-300/20 bg-gradient-to-br from-amber-700/80 to-orange-900/80 text-white'
                             : 'rounded-bl-md border-white/10 bg-[#241f31] text-white/90',
@@ -1810,17 +1834,21 @@ export function AdminScreen() {
                         ].join(' ')}
                       >
                         <div
-                          className={`flex flex-wrap items-center gap-2 text-[11px] ${
+                          className={`admin-deleted-meta flex min-w-0 flex-wrap items-center gap-2 text-[11px] ${
                             isHost ? 'justify-end' : ''
                           }`}
                         >
-                          <span className="font-semibold text-white/90">{senderName}</span>
+                          <span className="admin-deleted-name font-semibold text-white/90">
+                            {senderName}
+                          </span>
                           <Badge tone={isHost ? 'warn' : 'neutral'}>
                             {isHost ? 'Host' : 'User'}
                           </Badge>
-                          <span className="text-white/50">{formatDateTime(message.createdAt)}</span>
+                          <span className="shrink-0 text-white/50">
+                            {formatDateTime(message.createdAt)}
+                          </span>
                         </div>
-                        <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6">
+                        <p className="admin-deleted-text text-sm leading-6">
                           {message.content ||
                             (message.attachmentKind === 'IMAGE'
                               ? '📷 Photo'
@@ -1833,16 +1861,16 @@ export function AdminScreen() {
                                     : 'Attachment')}
                         </p>
                         <div
-                          className={`mt-1.5 flex flex-wrap items-center gap-2 text-[10px] text-white/55 ${
+                          className={`admin-deleted-actions mt-1.5 flex min-w-0 flex-wrap items-center gap-2 text-[10px] text-white/55 ${
                             isHost ? 'justify-end' : ''
                           }`}
                         >
                           {message.hides?.length ? (
-                            <span className="text-amber-200/70">
-                              hidden for{' '}
-                              {message.hides
-                                .map((hide) => hide.user?.username || 'account')
-                                .join(', ')}
+                            <span
+                              className="admin-deleted-hidden text-amber-200/70"
+                              title={hiddenNames}
+                            >
+                              hidden for {hiddenNames}
                             </span>
                           ) : null}
                           <button
@@ -2710,22 +2738,28 @@ function StatCard({
   return (
     <div className={`admin-stat-card admin-stat-${tone}`}>
       <div className="flex items-start justify-between gap-2">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-white/45">
+        <p className="admin-stat-label min-w-0 text-[10px] font-semibold uppercase tracking-[0.12em] text-white/45">
           {label}
         </p>
         {icon && <span className="admin-stat-icon">{icon}</span>}
       </div>
-      <p className="mt-2 text-2xl font-semibold tracking-tight text-white">{value}</p>
-      {detail && <p className="muted mt-1 text-[11px] leading-4">{detail}</p>}
+      <p className="admin-stat-value mt-1.5 text-xl font-semibold tracking-tight text-white">
+        {value}
+      </p>
+      {detail && (
+        <p className="admin-stat-detail muted mt-0.5 truncate text-[10px] leading-4">{detail}</p>
+      )}
     </div>
   );
 }
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between gap-2 rounded-xl bg-black/15 px-3 py-2">
-      <span className="muted text-xs">{label}</span>
-      <span className="text-sm">{value}</span>
+    <div className="flex min-w-0 items-center justify-between gap-2 rounded-xl bg-black/15 px-3 py-2">
+      <span className="muted min-w-0 truncate text-xs">{label}</span>
+      <span className="min-w-0 truncate text-sm" title={value}>
+        {value}
+      </span>
     </div>
   );
 }

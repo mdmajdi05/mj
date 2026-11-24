@@ -44,7 +44,7 @@ services:
     environment:
       DATABASE_URL: postgresql://duo:${POSTGRES_PASSWORD}@db:5432/private_duo?schema=public
       WEB_ORIGIN: ${WEB_ORIGIN}
-      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-1024}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-1000}
     depends_on:
       db:
         condition: service_healthy
@@ -68,7 +68,7 @@ services:
       dockerfile: deploy/Dockerfile.web
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
-        NEXT_PUBLIC_MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-1024}
+        NEXT_PUBLIC_MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-1000}
         NEXT_PUBLIC_TURN_URL: ${NEXT_PUBLIC_TURN_URL}
         NEXT_PUBLIC_TURN_USERNAME: ${NEXT_PUBLIC_TURN_USERNAME}
         NEXT_PUBLIC_TURN_PASSWORD: ${NEXT_PUBLIC_TURN_PASSWORD}
@@ -78,7 +78,7 @@ services:
     environment:
       NODE_ENV: production
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
-      NEXT_PUBLIC_MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-1024}
+      NEXT_PUBLIC_MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-1000}
     depends_on: [api]
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000 >/dev/null || exit 1"]
