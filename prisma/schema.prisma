@@ -97,7 +97,7 @@ model Message {
   attachmentKind String?
   attachmentMime String?
   attachmentName String?
-  attachmentSize Int?
+  attachmentSize Float?
   replyToId      String?
   replyTo        Message?          @relation("MessageReply", fields: [replyToId], references: [id], onDelete: SetNull)
   replies        Message[]         @relation("MessageReply")
@@ -120,18 +120,30 @@ model MessageHide {
   @@unique([messageId, userId])
   @@index([userId])
 }
-/// Private image/video attachments. Bytes live in Postgres so deployments do
-/// not depend on a writable volume, and access is only through an authed route.
+/// Private image/video/audio/file attachments. New bytes are streamed to the
+/// durable media volume and referenced by `storageKey`; nullable `data` keeps
+/// attachments created by older builds readable. `size` is a double so files
+/// larger than 2 GB can be described without overflowing a 32-bit Int.
 model ChatMedia {
-  id        String   @id @default(cuid())
-  ownerId   String
-  kind      String
-  mimeType  String
-  fileName  String?
-  size      Int
-  data      Bytes
-  createdAt DateTime @default(now())
+  id         String   @id @default(cuid())
+  ownerId    String
+  kind       String
+  mimeType   String
+  fileName   String?
+  size       Float
+  data       Bytes?
+  storageKey String?  @unique
+  createdAt  DateTime @default(now())
   @@index([ownerId])
+}
+
+/// Singleton row holding the Host-managed global media upload ceiling. The
+/// saved value is authoritative for images, videos, voice notes and files.
+model MediaSetting {
+  id          String   @id @default("global")
+  maxUploadMb Int      @default(2048)
+  updatedBy   String?
+  updatedAt   DateTime @updatedAt
 }
 model Game {
   id       String        @id @default(cuid())

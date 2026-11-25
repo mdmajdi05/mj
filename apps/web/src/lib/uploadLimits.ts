@@ -1,33 +1,20 @@
 /**
- * Build-time fallback for the upload ceiling. The authoritative value is
- * fetched from /api/chat/upload-limit at runtime, so this only keeps the app
- * usable before that request completes.
+ * Formatting helpers for the Host-managed upload ceiling.
  *
- * Keep the default at 1000 MB: it is comfortably above any reverse-proxy
- * default, below PostgreSQL BYTEA's practical ceiling, and inside Prisma's
- * 32-bit Int size column.
+ * The authoritative value is loaded from /api/chat/upload-limit at runtime and
+ * pushed to every client through the `media:upload-limit` socket event. There
+ * is deliberately no build-time fallback: a stale Next.js build must never
+ * reintroduce an old cap.
  */
-const DEFAULT_MAX_UPLOAD_MB = 1000;
-const MIN_MAX_UPLOAD_MB = 100;
-const ABSOLUTE_MAX_UPLOAD_MB = 1024;
-
-function parseLimit(value: string | undefined): number {
-  const parsed = Number.parseInt(value || '', 10);
-  if (!Number.isFinite(parsed)) return DEFAULT_MAX_UPLOAD_MB;
-  return Math.min(
-    ABSOLUTE_MAX_UPLOAD_MB,
-    Math.max(MIN_MAX_UPLOAD_MB, parsed)
-  );
-}
-
-export const MAX_UPLOAD_MB = parseLimit(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB);
-export const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
-
 export function formatUploadLimitFromMb(mb: number) {
-  if (mb >= 1024) return `${Math.floor(mb / 1024)} GB`;
+  if (!Number.isFinite(mb) || mb <= 0) return 'Not set';
+  if (mb >= 1024) {
+    const gb = mb / 1024;
+    return `${Number.isInteger(gb) ? gb : Number(gb.toFixed(2))} GB`;
+  }
   return `${mb} MB`;
 }
 
-export function formatUploadLimit() {
-  return formatUploadLimitFromMb(MAX_UPLOAD_MB);
+export function formatUploadLimit(mb: number) {
+  return formatUploadLimitFromMb(mb);
 }

@@ -196,6 +196,13 @@ export type AdminStats = {
   generatedAt: string;
 };
 
+export type MediaSettingState = {
+  maxUploadMb: number;
+  maxUploadBytes: number;
+  updatedAt?: string | null;
+  updatedBy?: string | null;
+};
+
 export type AdminActivity = {
   notifications: Notification[];
   calls: CallRecord[];

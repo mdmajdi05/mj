@@ -12,10 +12,12 @@ RUN npx prisma generate && npm run build -w @private-duo/server
 FROM node:22-alpine AS runtime
 RUN apk add --no-cache openssl tini
 WORKDIR /app
+RUN mkdir -p /var/lib/private-duo/media && chown -R node:node /var/lib/private-duo
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PRISMA_HIDE_UPDATE_MESSAGE=1 \
-    CHECKPOINT_DISABLE=1
+    CHECKPOINT_DISABLE=1 \
+    MEDIA_STORAGE_DIR=/var/lib/private-duo/media
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/apps/server ./apps/server
 COPY --from=build /app/prisma ./prisma

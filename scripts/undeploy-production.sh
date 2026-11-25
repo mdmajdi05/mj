@@ -43,7 +43,7 @@ fi
 
 if [ "$ASSUME_YES" -eq 0 ]; then
   printf 'Remove the Private Duo Docker stack?'
-  [ "$PURGE" -eq 1 ] && printf ' This will also delete its database volume, certificates and .env.'
+  [ "$PURGE" -eq 1 ] && printf ' This will also delete its database and media volumes, certificates and .env.'
   printf ' [y/N] '
   read -r reply
   case "$reply" in y|Y|yes|YES) : ;; *) echo "Cancelled."; exit 0 ;; esac
@@ -100,7 +100,7 @@ if [ "$PURGE" -eq 1 ]; then
   log "Removing Private Duo certificates, .env and password marker..."
   rm -rf "$APP_DIR/certbot"
   rm -f "$APP_DIR/.env" "$APP_DIR/.private-duo-passwords-set"
-  warn "Database volume, certificates and .env were removed. Backups in $APP_DIR/backups were kept."
+  warn "Database and media volumes, certificates and .env were removed. Backups in $APP_DIR/backups were kept."
 else
   info_text="Application data volume, certificates and .env were kept. Use --purge to remove them."
   printf '\n[private-duo] %s\n' "$info_text"

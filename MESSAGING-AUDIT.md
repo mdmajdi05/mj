@@ -720,10 +720,10 @@ Consequences:
 
 | Aspect | Implementation | Assessment |
 |---|---|---|
-| Upload | `POST /api/chat/media`, disk via `storageKey` | Reasonable |
-| Legacy path | `ChatMedia.data Bytes?` | Two backends; needs a decision |
+| Upload | `POST /api/chat/media`, streamed to disk via `storageKey` | Reasonable |
+| Legacy path | `ChatMedia.data Bytes?` retained for pre-migration rows | Read-only compatibility |
 | Ownership on attach | `media.ownerId !== user.id` → error (`chat.ts:109-112`) | ✅ |
-| Size limits | Unified `MAX_UPLOAD_MB` (default 1000 MB) for image/video/audio/file; server publishes it via `/api/chat/upload-limit` | Client uses the live server value; sending flow unchanged |
+| Size limits | One Host-managed `MediaSetting.maxUploadMb` (MB or GB) for image/video/audio/file; live via `/api/chat/upload-limit` and `media:upload-limit` | No hardcoded per-kind cap |
 | Provisioning | `cleanupTemporaryMediaFiles()` | `NOT VERIFIED` (scheduling) |
 | Orphans | Media uploaded but never attached | No visible GC in send flow |
 | Serving | `GET /api/chat/media/:id` | Auth check needs line-level verification (`NOT VERIFIED`) |

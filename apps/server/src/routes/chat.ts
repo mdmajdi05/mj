@@ -1,4 +1,6 @@
-import express, { Router } from 'express';
+import { Router } from 'express';
+import { createReadStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
@@ -11,12 +13,7 @@ import {
 } from '@prisma/client';
 import { asyncHandler } from '../lib/async-handler';
 import { HttpError } from '../lib/http-error';
-import {
-  formatUploadLimit,
-  MAX_UPLOAD_BYTES,
-  MAX_UPLOAD_MB,
-  RAW_BODY_LIMIT
-} from '../lib/uploadLimits';
+import { formatUploadLimitFromMb } from '../lib/uploadLimits';
 import { prisma, requireAuth, requireHost, type AuthRequest } from '../middleware/auth';
 import {
   destinationOf,
@@ -36,6 +33,13 @@ import {
   setGlobalNotificationsEnabled,
   setNotificationCopies
 } from '../services/notificationSettings';
+import { getMediaSetting, setMediaUploadLimit } from '../services/mediaSettings';
+import {
+  mediaPath,
+  parseMediaRange,
+  removeStoredMedia,
+  storeIncomingMedia
+} from '../services/media-storage';
 
 export const chatRouter = Router();
 chatRouter.use(requireAuth);
@@ -713,34 +717,38 @@ const mediaKindOf = (mimeType: string) =>
 chatRouter.get(
   '/upload-limit',
   asyncHandler(async (_req, res) => {
-    res.json({ maxUploadMb: MAX_UPLOAD_MB, maxUploadBytes: MAX_UPLOAD_BYTES });
+    const setting = await getMediaSetting();
+    res.json({
+      maxUploadMb: setting.maxUploadMb,
+      maxUploadBytes: setting.maxUploadBytes,
+      updatedAt: setting.updatedAt
+    });
   })
 );
 
 chatRouter.post(
   '/media',
   requireChatUnlock,
-  express.raw({ type: () => true, limit: RAW_BODY_LIMIT }),
   asyncHandler(async (req: AuthRequest, res) => {
-    const body = req.body as unknown;
-    if (!Buffer.isBuffer(body) || body.length === 0) {
-      throw new HttpError(400, 'Choose a file or a photo to send');
-    }
     const mimeType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
     const kind = mediaKindOf(mimeType || 'application/octet-stream');
-    // One configured ceiling for every media kind. Voice notes no longer have
-    // a separate 25 MB cap, and videos can use the full configured limit.
-    if (body.length > MAX_UPLOAD_BYTES) {
-      const label =
-        kind === 'IMAGE'
-          ? 'Images'
-          : kind === 'VIDEO'
-            ? 'Videos'
-            : kind === 'AUDIO'
-              ? 'Voice messages'
-              : 'Files';
-      throw new HttpError(413, `${label} must be ${formatUploadLimit()} or smaller`);
-    }
+    // One Host-managed ceiling for every media kind. It is read on each request
+    // so a value saved in the Admin panel applies immediately, without a
+    // restart, and no per-kind hardcoded cap can override it.
+    const setting = await getMediaSetting();
+    const label =
+      kind === 'IMAGE'
+        ? 'Images'
+        : kind === 'VIDEO'
+          ? 'Videos'
+          : kind === 'AUDIO'
+            ? 'Voice messages'
+            : 'Files';
+    const { storageKey, size } = await storeIncomingMedia(
+      req,
+      setting.maxUploadBytes,
+      `${label} must be ${formatUploadLimitFromMb(setting.maxUploadMb)} or smaller`
+    );
 
     const rawName = String(req.headers['x-file-name'] || '');
     let fileName: string | null = null;
@@ -749,17 +757,26 @@ chatRouter.post(
     } catch {
       fileName = rawName.slice(0, 160) || null;
     }
-    const media = await prisma.chatMedia.create({
-      data: {
-        ownerId: req.user!.id,
-        kind,
-        mimeType,
-        fileName,
-        size: body.length,
-        data: new Uint8Array(body)
-      },
-      select: { id: true, kind: true, mimeType: true, fileName: true, size: true }
-    });
+
+    let media;
+    try {
+      media = await prisma.chatMedia.create({
+        data: {
+          ownerId: req.user!.id,
+          kind,
+          mimeType,
+          fileName,
+          size,
+          storageKey
+        },
+        select: { id: true, kind: true, mimeType: true, fileName: true, size: true }
+      });
+    } catch (error) {
+      await removeStoredMedia(storageKey).catch((cleanupError: unknown) => {
+        console.error('Failed to remove media after metadata save failed', cleanupError);
+      });
+      throw error;
+    }
     res.status(201).json(media);
   })
 );
@@ -767,7 +784,17 @@ chatRouter.post(
 chatRouter.get(
   '/media/:id',
   asyncHandler(async (req: AuthRequest, res) => {
-    const media = await prisma.chatMedia.findUnique({ where: { id: req.params.id } });
+    const media = await prisma.chatMedia.findUnique({
+      where: { id: req.params.id },
+      select: {
+        id: true,
+        ownerId: true,
+        mimeType: true,
+        size: true,
+        data: true,
+        storageKey: true
+      }
+    });
     if (!media) throw new HttpError(404, 'Attachment not found');
 
     // Only the uploader or their current chat partner may read the bytes.
@@ -779,7 +806,39 @@ chatRouter.get(
 
     res.setHeader('Content-Type', media.mimeType);
     res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
-    res.send(Buffer.from(media.data));
+    res.setHeader('Accept-Ranges', 'bytes');
+    const range = parseMediaRange(req.headers.range, media.size);
+    if (range === 'unsatisfiable') {
+      res.setHeader('Content-Range', `bytes */${media.size}`);
+      res.status(416).end();
+      return;
+    }
+
+    const start = range?.start ?? 0;
+    const end = range?.end ?? media.size - 1;
+    res.setHeader('Content-Length', String(Math.max(0, end - start + 1)));
+    if (range) {
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${media.size}`);
+    }
+    if (media.storageKey) {
+      try {
+        await pipeline(
+          createReadStream(mediaPath(media.storageKey), range ? { start, end } : undefined),
+          res
+        );
+      } catch (error) {
+        console.error('Failed to stream private media', error);
+        if (!res.headersSent) throw error;
+        if (!res.destroyed) {
+          res.destroy(error instanceof Error ? error : new Error('Media stream failed'));
+        }
+      }
+      return;
+    }
+    if (!media.data) throw new HttpError(500, 'Attachment data is unavailable');
+    const data = Buffer.from(media.data);
+    res.send(range ? data.subarray(start, end + 1) : data);
   })
 );
 
@@ -1460,7 +1519,8 @@ chatRouter.get(
       pendingPermissions,
       notifications,
       unreadNotifications,
-      media
+      media,
+      mediaSetting
     ] = await Promise.all([
       prisma.message.count({ where: chatScope }),
       prisma.message.count({
@@ -1486,7 +1546,8 @@ chatRouter.get(
       prisma.permission.count({ where: { status: PermissionStatus.REQUESTED } }),
       prisma.notification.count(),
       prisma.notification.count({ where: { readAt: null } }),
-      prisma.chatMedia.aggregate({ _count: true, _sum: { size: true } })
+      prisma.chatMedia.aggregate({ _count: true, _sum: { size: true } }),
+      getMediaSetting()
     ]);
 
     res.json({
@@ -1507,7 +1568,7 @@ chatRouter.get(
       unreadNotifications,
       mediaFiles: media._count,
       mediaBytes: media._sum.size ?? 0,
-      uploadLimitMb: MAX_UPLOAD_MB,
+      uploadLimitMb: mediaSetting.maxUploadMb,
       generatedAt: new Date().toISOString()
     });
   })
@@ -1835,6 +1896,12 @@ chatRouter.delete(
     const mediaIds = rows
       .map((row) => row.attachmentId)
       .filter((id): id is string => Boolean(id));
+    const storedMedia = mediaIds.length
+      ? await prisma.chatMedia.findMany({
+          where: { id: { in: mediaIds } },
+          select: { storageKey: true }
+        })
+      : [];
 
     if (messageIds.length) {
       await prisma.message.deleteMany({ where: { id: { in: messageIds } } });
@@ -1842,6 +1909,9 @@ chatRouter.delete(
     if (mediaIds.length) {
       await prisma.chatMedia.deleteMany({ where: { id: { in: mediaIds } } });
     }
+    await Promise.all(
+      storedMedia.flatMap((item) => (item.storageKey ? [removeStoredMedia(item.storageKey)] : []))
+    );
     await audit(req.user!.id, 'DELETE_DELETED_MESSAGES_FOREVER', undefined, {
       count: messageIds.length
     });
@@ -2065,6 +2135,12 @@ chatRouter.delete(
         ...ownedMedia.map((media) => media.id)
       ])
     ];
+    const storedMedia = mediaIds.length
+      ? await prisma.chatMedia.findMany({
+          where: { id: { in: mediaIds } },
+          select: { storageKey: true }
+        })
+      : [];
 
     await prisma.$transaction(async (tx) => {
       if (conversationIds.length) {
@@ -2103,6 +2179,10 @@ chatRouter.delete(
       }
       await tx.user.delete({ where: { id: userId } });
     });
+
+    await Promise.all(
+      storedMedia.flatMap((item) => (item.storageKey ? [removeStoredMedia(item.storageKey)] : []))
+    );
 
     await audit(req.user!.id, 'DELETE_GUEST_USER', userId, {
       username: target.username,
@@ -2271,6 +2351,63 @@ chatRouter.post(
     }
 
     res.json(nextState);
+  })
+);
+
+/* ------------------------------------------------------------------ */
+/* Admin: global media upload ceiling                                  */
+/* ------------------------------------------------------------------ */
+
+chatRouter.get(
+  '/admin/media-settings',
+  requireHost,
+  asyncHandler(async (_req, res) => {
+    res.json(await getMediaSetting());
+  })
+);
+
+chatRouter.post(
+  '/admin/media-settings',
+  requireHost,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = z
+      .object({
+        maxUploadMb: z.number().finite().positive().optional(),
+        value: z.number().finite().positive().optional(),
+        unit: z.enum(['MB', 'GB']).optional()
+      })
+      .safeParse(req.body);
+    if (!parsed.success) throw new HttpError(400, 'Invalid media setting');
+
+    const requestedMb =
+      parsed.data.maxUploadMb !== undefined
+        ? parsed.data.maxUploadMb
+        : parsed.data.value !== undefined
+          ? parsed.data.value * (parsed.data.unit === 'GB' ? 1024 : 1)
+          : undefined;
+    if (requestedMb === undefined) throw new HttpError(400, 'Enter an upload limit');
+    const maxUploadMb = Math.round(requestedMb);
+    if (!Number.isFinite(maxUploadMb) || maxUploadMb < 1) {
+      throw new HttpError(400, 'The upload limit must be at least 1 MB');
+    }
+
+    const state = await setMediaUploadLimit(maxUploadMb, req.user!.id);
+
+    await audit(req.user!.id, 'UPDATE_MEDIA_SETTING', undefined, {
+      maxUploadMb: state.maxUploadMb
+    });
+
+    // Every connected client updates immediately, so a new ceiling applies to
+    // the next upload from any account without refreshing or restarting.
+    const recipients = await prisma.user.findMany({ select: { id: true } });
+    for (const recipient of recipients) {
+      emitToUser(recipient.id, 'media:upload-limit', {
+        maxUploadMb: state.maxUploadMb,
+        maxUploadBytes: state.maxUploadBytes
+      });
+    }
+
+    res.json(state);
   })
 );
 

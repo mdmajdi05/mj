@@ -11,11 +11,7 @@ import {
 } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { API, api, ApiError } from '@/lib/api';
-import {
-  formatUploadLimitFromMb,
-  MAX_UPLOAD_BYTES,
-  MAX_UPLOAD_MB
-} from '@/lib/uploadLimits';
+import { formatUploadLimitFromMb } from '@/lib/uploadLimits';
 import { browserHasGrant, rememberBrowserGrant, replayBrowserGrants } from '@/lib/browserPermissions';
 import { mediaInteractionActive } from '@/lib/mediaGuard';
 import type {
@@ -107,9 +103,12 @@ export function useDuoApp() {
   const [callStartedAt, setCallStartedAt] = useState<number | null>(null);
   const [guestMicConsent, setGuestMicConsentState] = useState(false);
   const [chatSessionUnlocked, setChatSessionUnlocked] = useState(false);
+  // The server owns the ceiling. 0 means "not loaded yet"; until the live
+  // value arrives the server still validates every upload, so there is no
+  // hardcoded client fallback that could disagree with the Admin setting.
   const [uploadLimit, setUploadLimit] = useState({
-    mb: MAX_UPLOAD_MB,
-    bytes: MAX_UPLOAD_BYTES
+    mb: 0,
+    bytes: 0
   });
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -467,9 +466,9 @@ export function useDuoApp() {
     ]);
   }, [loadMessages, loadInbox, loadPermissions, loadNotifications, loadSummary]);
 
-  // The server owns the real ceiling; the build-time constant is only a
-  // fallback for the first render. This keeps video and voice notes aligned
-  // with the deployed Express/Nginx configuration.
+  // The server owns the real ceiling; there is no build-time fallback. This
+  // keeps every media kind aligned with the value the Host saved in Admin, and
+  // the `media:upload-limit` socket event keeps it live after a change.
   useEffect(() => {
     let active = true;
     api<{ maxUploadMb: number; maxUploadBytes: number }>('/chat/upload-limit')
@@ -1415,6 +1414,20 @@ export function useDuoApp() {
       // Resume an existing session (for example after a network drop) without
       // opening any private content. Audio stays muted until the user asks.
       socket.emit('call:rejoin', callIdRef.current ? { callId: callIdRef.current } : {});
+      // Re-read the Host-managed ceiling after every reconnect so a value that
+      // changed while this client was offline cannot leave a stale guard.
+      void api<{ maxUploadMb: number; maxUploadBytes: number }>('/chat/upload-limit')
+        .then((limit) => {
+          if (
+            Number.isFinite(limit.maxUploadMb) &&
+            Number.isFinite(limit.maxUploadBytes) &&
+            limit.maxUploadMb > 0 &&
+            limit.maxUploadBytes > 0
+          ) {
+            setUploadLimit({ mb: limit.maxUploadMb, bytes: limit.maxUploadBytes });
+          }
+        })
+        .catch(() => undefined);
     });
 
     socket.on('disconnect', () => {
@@ -1636,6 +1649,17 @@ export function useDuoApp() {
           : 'Notifications were disabled by the Host for all accounts.'
       );
     });
+
+    socket.on(
+      'media:upload-limit',
+      (payload: { maxUploadMb?: number; maxUploadBytes?: number }) => {
+        const mb = Number(payload?.maxUploadMb);
+        const bytes = Number(payload?.maxUploadBytes);
+        if (!Number.isFinite(mb) || !Number.isFinite(bytes) || mb <= 0 || bytes <= 0) return;
+        setUploadLimit({ mb, bytes });
+        showNotice(`Upload limit updated to ${formatUploadLimitFromMb(mb)}.`);
+      }
+    );
 
     socket.on('study:updated', () => {
       if (typeof window !== 'undefined') {
@@ -1950,9 +1974,9 @@ export function useDuoApp() {
           : mime.startsWith('audio/')
             ? 'AUDIO'
             : 'FILE';
-      // All kinds share the server's live ceiling. The sending method is
-      // unchanged: XHR to /api/chat/media, then socket message:send.
-      if (file.size > uploadLimit.bytes) {
+      // All kinds share the Host-managed ceiling fetched at runtime. Until it
+      // arrives (bytes === 0) the server remains the only validator.
+      if (uploadLimit.bytes > 0 && file.size > uploadLimit.bytes) {
         const label =
           kind === 'VIDEO'
             ? 'Videos'
@@ -2014,7 +2038,9 @@ export function useDuoApp() {
               if (request.status === 413) {
                 reject(
                   new Error(
-                    'This file is too large for the server. Try a smaller file or a shorter video.'
+                    typeof data?.error === 'string' && data.error
+                      ? data.error
+                      : 'This upload was rejected as too large. Check the Admin upload limit and any reverse proxy in front of the server.'
                   )
                 );
                 return;

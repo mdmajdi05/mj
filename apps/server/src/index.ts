@@ -11,6 +11,7 @@ import { attachSocketHandlers } from './sockets';
 import { originGuard } from './lib/origin';
 import { HttpError } from './lib/http-error';
 import { prisma } from './lib/prisma';
+import { cleanupTemporaryMediaFiles } from './services/media-storage';
 
 const app = express();
 const server = http.createServer(app);
@@ -38,7 +39,13 @@ app.use(
     credentials: true
   })
 );
-app.use(express.json({ limit: '32kb' }));
+const jsonParser = express.json({ limit: '32kb' });
+app.use((req, res, next) => {
+  // Media uploads stream their raw body to disk; the JSON parser must not
+  // consume or buffer it, even if a client labels the file application/json.
+  if (req.method === 'POST' && req.path === '/api/chat/media') return next();
+  return jsonParser(req, res, next);
+});
 app.use(cookieParser());
 app.use(originGuard);
 
@@ -87,10 +94,17 @@ const port = Number(process.env.PORT || 4000);
 server.requestTimeout = 1_800_000;
 server.headersTimeout = 120_000;
 
-server.listen(port, () => {
-  console.log(`Study with Game API listening on ${port}`);
-  console.log(`Allowed web origins: ${allowedOrigins.join(', ')}`);
-});
+void cleanupTemporaryMediaFiles()
+  .then(() => {
+    server.listen(port, () => {
+      console.log(`Study with Game API listening on ${port}`);
+      console.log(`Allowed web origins: ${allowedOrigins.join(', ')}`);
+    });
+  })
+  .catch((error: unknown) => {
+    console.error('Failed to prepare private media storage', error);
+    process.exitCode = 1;
+  });
 
 async function shutdown(signal: string) {
   console.log(`Received ${signal}; shutting down.`);

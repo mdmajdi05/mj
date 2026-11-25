@@ -40,6 +40,7 @@ import type {
   AdminStats,
   CallRecord,
   GameMessage,
+  MediaSettingState,
   Message,
   Permission
 } from '@/lib/types';
@@ -96,6 +97,7 @@ type Tab =
   | 'deleted'
   | 'users'
   | 'features'
+  | 'media'
   | 'study'
   | 'game'
   | 'permissions'
@@ -145,6 +147,13 @@ const tabs: TabMeta[] = [
     group: 'Settings',
     description: 'Control notification availability and per-account switches.',
     icon: <Bell size={16} />
+  },
+  {
+    id: 'media',
+    label: 'Media & uploads',
+    group: 'Settings',
+    description: 'Set the global upload limit for images, videos, voice notes and files.',
+    icon: <HardDrive size={16} />
   },
   {
     id: 'study',
@@ -231,6 +240,9 @@ export function AdminScreen() {
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
   const [notificationSettings, setNotificationSettings] =
     useState<NotificationFeatureState | null>(null);
+  const [mediaSettings, setMediaSettings] = useState<MediaSettingState | null>(null);
+  const [mediaLimitValue, setMediaLimitValue] = useState('');
+  const [mediaLimitUnit, setMediaLimitUnit] = useState<'MB' | 'GB'>('MB');
   const [deletedRole, setDeletedRole] = useState<'' | 'HOST' | 'GUEST'>('');
   const [gameMessages, setGameMessages] = useState<GameMessage[]>([]);
   const [search, setSearch] = useState('');
@@ -287,6 +299,7 @@ export function AdminScreen() {
         promoResult,
         conversationsResult,
         notificationResult,
+        mediaResult,
         deletedUsersResult
       ] = await Promise.allSettled([
         api<AdminStats>('/chat/admin/stats'),
@@ -298,6 +311,7 @@ export function AdminScreen() {
         api<any>('/chat/admin/promo/status'),
         api<AdminConversation[]>('/chat/admin/conversations'),
         api<NotificationFeatureState>('/chat/admin/notification-settings'),
+        api<MediaSettingState>('/chat/admin/media-settings'),
         api<AdminDeletedUser[]>('/chat/admin/users/deleted')
       ]);
       if (statsResult.status === 'fulfilled') setStatsData(statsResult.value);
@@ -313,6 +327,7 @@ export function AdminScreen() {
         setActiveConversationId((current) => current || next[0]?.id || '');
       }
       if (notificationResult.status === 'fulfilled') setNotificationSettings(notificationResult.value);
+      if (mediaResult.status === 'fulfilled') setMediaSettings(mediaResult.value);
       if (deletedUsersResult.status === 'fulfilled') setDeletedUsers(deletedUsersResult.value);
       setLoading(false);
     },
@@ -323,6 +338,20 @@ export function AdminScreen() {
     void refresh('');
     void duo.loadPermissions();
   }, [refresh, duo.loadPermissions]);
+
+  // Keep the editable field in sync with the persisted value without ever
+  // replacing it with a client-side default.
+  useEffect(() => {
+    if (!mediaSettings) return;
+    const mb = mediaSettings.maxUploadMb;
+    if (mb >= 1024 && mb % 1024 === 0) {
+      setMediaLimitUnit('GB');
+      setMediaLimitValue(String(mb / 1024));
+    } else {
+      setMediaLimitUnit('MB');
+      setMediaLimitValue(String(mb));
+    }
+  }, [mediaSettings]);
 
   useEffect(() => {
     if (!navOpen) return;
@@ -704,6 +733,39 @@ export function AdminScreen() {
       );
     } catch (cause) {
       duo.setError(cause instanceof Error ? cause.message : 'Notification setting could not be saved');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function saveMediaLimit() {
+    const parsed = Number(mediaLimitValue);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      duo.setError('Enter a valid upload limit greater than zero.');
+      return;
+    }
+    const maxUploadMb = Math.round(parsed * (mediaLimitUnit === 'GB' ? 1024 : 1));
+    if (maxUploadMb < 1) {
+      duo.setError('The upload limit must be at least 1 MB.');
+      return;
+    }
+    setBusy('media-setting');
+    try {
+      const state = await api<MediaSettingState>('/chat/admin/media-settings', {
+        method: 'POST',
+        body: JSON.stringify({ maxUploadMb })
+      });
+      setMediaSettings(state);
+      setStatsData((current) =>
+        current ? { ...current, uploadLimitMb: state.maxUploadMb } : current
+      );
+      duo.setNotice(
+        `Upload limit saved: ${formatUploadLimitFromMb(
+          state.maxUploadMb
+        )} for images, videos, voice notes and files.`
+      );
+    } catch (cause) {
+      duo.setError(cause instanceof Error ? cause.message : 'Upload limit could not be saved');
     } finally {
       setBusy('');
     }
@@ -2233,6 +2295,92 @@ export function AdminScreen() {
               </div>
               </CollapsibleSection>
             </div>
+          </Panel>
+        </div>
+      )}
+
+      {tab === 'media' && (
+        <div className="grid gap-4">
+          <Panel className="p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="eyebrow">Media & uploads</p>
+                <h3 className="mt-1 text-lg font-semibold">Global upload limit</h3>
+                <p className="muted mt-1 max-w-2xl text-sm leading-6">
+                  One saved value applies to every account and every media kind: images, videos,
+                  voice notes and files. It is stored in the database, so a restart or redeploy
+                  keeps the value the Host chose.
+                </p>
+              </div>
+              <Badge tone="accent">
+                {mediaSettings
+                  ? formatUploadLimitFromMb(mediaSettings.maxUploadMb)
+                  : 'Loading'}
+              </Badge>
+            </div>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_120px_auto] sm:items-end">
+              <Field
+                label={`New limit (${mediaLimitUnit})`}
+                type="number"
+                min="0.01"
+                step="0.01"
+                inputMode="decimal"
+                value={mediaLimitValue}
+                onChange={(event) => setMediaLimitValue(event.target.value)}
+              />
+              <label className="block">
+                <span className="field-label">Unit</span>
+                <select
+                  className="field"
+                  value={mediaLimitUnit}
+                  onChange={(event) =>
+                    setMediaLimitUnit(event.target.value === 'GB' ? 'GB' : 'MB')
+                  }
+                >
+                  <option value="MB">MB</option>
+                  <option value="GB">GB</option>
+                </select>
+              </label>
+              <Button
+                variant="primary"
+                onClick={() => void saveMediaLimit()}
+                disabled={busy === 'media-setting'}
+              >
+                <HardDrive size={15} /> Save limit
+              </Button>
+            </div>
+
+            <div className="mt-4 grid gap-2 text-sm">
+              <Row
+                label="Saved limit"
+                value={
+                  mediaSettings
+                    ? `${formatUploadLimitFromMb(mediaSettings.maxUploadMb)} (${
+                        mediaSettings.maxUploadMb
+                      } MB)`
+                    : 'Waiting for server'
+                }
+              />
+              <Row label="Applies to" value="Images, videos, voice notes and files" />
+              <Row
+                label="Last changed"
+                value={
+                  mediaSettings?.updatedAt
+                    ? formatDateTime(mediaSettings.updatedAt)
+                    : 'Not changed yet'
+                }
+              />
+              <Row label="Media files" value={formatCount(statsData?.mediaFiles)} />
+              <Row label="Media storage" value={formatStorage(statsData?.mediaBytes)} />
+            </div>
+
+            <p className="muted mt-3 text-xs leading-5">
+              The bundled Nginx no longer has a separate body-size cap. If an external reverse
+              proxy (Nginx Proxy Manager, Traefik, Cloudflare, etc.) sits in front of this stack,
+              raise its upload limit too; otherwise it can reject a file before it reaches this
+              setting.
+            </p>
           </Panel>
         </div>
       )}

@@ -9,8 +9,6 @@
  * returned unchanged.
  */
 
-import { formatUploadLimit } from './uploadLimits';
-
 const MAX_DIMENSION = 2560;
 const MAX_TARGET_BYTES = 6 * 1024 * 1024;
 const SKIP_IF_SMALLER_THAN = 1.5 * 1024 * 1024;
@@ -110,16 +108,4 @@ export async function prepareImageForUpload(file: File): Promise<File> {
   } finally {
     decoded?.release();
   }
-}
-
-export function describeUploadLimit(kind: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE') {
-  const label =
-    kind === 'VIDEO'
-      ? 'Videos'
-      : kind === 'IMAGE'
-        ? 'Images'
-        : kind === 'AUDIO'
-          ? 'Voice messages'
-          : 'Files';
-  return `${label} must be ${formatUploadLimit()} or smaller.`;
 }
