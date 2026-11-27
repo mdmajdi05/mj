@@ -11,6 +11,7 @@ import {
   BookOpen,
   Check,
   ChevronDown,
+  ChevronLeft,
   Database,
   Gamepad2,
   HardDrive,
@@ -276,6 +277,7 @@ export function AdminScreen() {
   const [deletedTo, setDeletedTo] = useState('');
   const [deletedSelectMode, setDeletedSelectMode] = useState(false);
   const [selectedDeletedIds, setSelectedDeletedIds] = useState<Set<string>>(new Set());
+  const [deletedMobileChatOpen, setDeletedMobileChatOpen] = useState(false);
 
   const deleteForLabel =
     deleteFor === 'BOTH' ? 'Both members' : deleteFor === 'HOST' ? 'Host only' : 'Guest only';
@@ -585,6 +587,11 @@ export function AdminScreen() {
     setDeletedConversationFilter(conversationId);
     setActiveDeletedConversationId(conversationId);
     setSelectedDeletedIds(new Set());
+    setDeletedMobileChatOpen(true);
+  }
+
+  function showDeletedChatList() {
+    setDeletedMobileChatOpen(false);
   }
 
   function toggleAdminSelected(id: string) {
@@ -841,6 +848,15 @@ export function AdminScreen() {
       messages
     }));
   }, [deletedByFilters]);
+
+  const deletedHiddenCopies = useMemo(
+    () =>
+      deletedByFilters.reduce(
+        (total, message) => total + (message.hides?.length || 0),
+        0
+      ),
+    [deletedByFilters]
+  );
 
   const conversationTitle = useCallback(
     (conversationId: string) => {
@@ -1612,369 +1628,424 @@ export function AdminScreen() {
       )}
 
       {tab === 'deleted' && (
-        <Panel className="p-5">
-          <div className="admin-toolbar">
-            <label className="admin-field">
-              <span className="admin-field-label">User</span>
-              <select
-                className="field"
-                value={deletedRole}
-                onChange={(event) => {
-                  setDeletedRole(event.target.value as '' | 'HOST' | 'GUEST');
-                  setSelectedDeletedIds(new Set());
-                }}
-              >
-                <option value="">All users</option>
-                <option value="HOST">Host</option>
-                <option value="GUEST">User</option>
-              </select>
-            </label>
-            <label className="admin-field max-w-[11rem]">
-              <span className="admin-field-label">From date</span>
-              <input
-                type="date"
-                className="field"
-                value={deletedFrom}
-                max={deletedTo || undefined}
-                onChange={(event) => {
-                  setDeletedFrom(event.target.value);
-                  setSelectedDeletedIds(new Set());
-                }}
-              />
-            </label>
-            <label className="admin-field max-w-[11rem]">
-              <span className="admin-field-label">To date</span>
-              <input
-                type="date"
-                className="field"
-                value={deletedTo}
-                min={deletedFrom || undefined}
-                onChange={(event) => {
-                  setDeletedTo(event.target.value);
-                  setSelectedDeletedIds(new Set());
-                }}
-              />
-            </label>
-            <Button
-              variant="primary"
-              onClick={() =>
-                setRecoverPrompt({
-                  role: deletedRole || undefined,
-                  conversationId: deletedConversationFilter || undefined,
-                  from: deletedFrom || undefined,
-                  to: deletedTo || undefined,
-                  label: deletedConversationFilter
-                    ? `messages in ${conversationTitle(deletedConversationFilter)}`
-                    : deletedRole
-                      ? `${deletedRole.toLowerCase()} messages`
-                      : 'all deleted messages'
-                })
-              }
-              disabled={busy === 'recover' || visibleDeleted.length === 0}
-            >
-              <RotateCcw size={14} /> Recover filtered
-            </Button>
-            <Button
-              variant="danger"
-              onClick={() =>
-                void purgeDeleted(undefined, deletedRole || undefined, {
-                  conversationId: deletedConversationFilter || undefined,
-                  from: deletedFrom || undefined,
-                  to: deletedTo || undefined
-                })
-              }
-              disabled={busy === 'purge' || visibleDeleted.length === 0}
-            >
-              <Trash2 size={14} /> Delete filtered forever
-            </Button>
-          </div>
+        <div className="recycle-shell">
+          <section className="recycle-intro">
+            <div className="recycle-intro-copy">
+              <p className="eyebrow">Moderation · Recycle Bin</p>
+              <h2 className="mt-1 text-lg font-semibold tracking-tight">
+                Recover what was deleted
+              </h2>
+              <p className="muted mt-1 max-w-2xl text-xs leading-5">
+                Messages deleted by either side are kept here. Open a chat, select what you need,
+                then restore it to Host, User or both — or remove it forever.
+              </p>
+            </div>
+            <div className="recycle-intro-stats">
+              <div className="recycle-stat">
+                <span className="recycle-stat-icon">
+                  <Inbox size={15} />
+                </span>
+                <span className="min-w-0">
+                  <strong>{formatCount(deletedByFilters.length)}</strong>
+                  <small>messages in bin</small>
+                </span>
+              </div>
+              <div className="recycle-stat">
+                <span className="recycle-stat-icon">
+                  <MessageCircle size={15} />
+                </span>
+                <span className="min-w-0">
+                  <strong>{formatCount(deletedGroups.length)}</strong>
+                  <small>chats affected</small>
+                </span>
+              </div>
+              <div className="recycle-stat">
+                <span className="recycle-stat-icon">
+                  <RotateCcw size={15} />
+                </span>
+                <span className="min-w-0">
+                  <strong>{formatCount(deletedHiddenCopies)}</strong>
+                  <small>hidden copies</small>
+                </span>
+              </div>
+            </div>
+          </section>
 
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Button
-              variant={deletedSelectMode ? 'primary' : 'ghost'}
-              onClick={() => {
-                setDeletedSelectMode((value) => !value);
-                setSelectedDeletedIds(new Set());
-              }}
-            >
-              <ListChecks size={15} />
-              {deletedSelectMode ? 'Done selecting' : 'Select messages'}
-            </Button>
-            {deletedSelectMode && (
-              <>
-                <Button
-                  disabled={!threadMessages.length}
-                  onClick={() =>
-                    setSelectedDeletedIds(
-                      selectedDeletedIds.size === threadMessages.length
-                        ? new Set()
-                        : new Set(threadMessages.map((message) => message.id))
-                    )
-                  }
-                >
-                  {selectedDeletedIds.size === threadMessages.length && threadMessages.length > 0
-                    ? 'Clear all'
-                    : 'Select all'}
-                </Button>
-                <span className="muted text-xs">{selectedDeletedIds.size} selected</span>
+          <Panel className="recycle-panel">
+            <div className="recycle-toolbar">
+              <div className="recycle-filter-grid">
+                <label className="admin-field">
+                  <span className="admin-field-label">User</span>
+                  <select
+                    className="field"
+                    value={deletedRole}
+                    onChange={(event) => {
+                      setDeletedRole(event.target.value as '' | 'HOST' | 'GUEST');
+                      setSelectedDeletedIds(new Set());
+                    }}
+                  >
+                    <option value="">All users</option>
+                    <option value="HOST">Host</option>
+                    <option value="GUEST">User</option>
+                  </select>
+                </label>
+                <label className="admin-field">
+                  <span className="admin-field-label">From date</span>
+                  <input
+                    type="date"
+                    className="field"
+                    value={deletedFrom}
+                    max={deletedTo || undefined}
+                    onChange={(event) => {
+                      setDeletedFrom(event.target.value);
+                      setSelectedDeletedIds(new Set());
+                    }}
+                  />
+                </label>
+                <label className="admin-field">
+                  <span className="admin-field-label">To date</span>
+                  <input
+                    type="date"
+                    className="field"
+                    value={deletedTo}
+                    min={deletedFrom || undefined}
+                    onChange={(event) => {
+                      setDeletedTo(event.target.value);
+                      setSelectedDeletedIds(new Set());
+                    }}
+                  />
+                </label>
+              </div>
+              <div className="recycle-filter-actions">
                 <Button
                   variant="primary"
-                  disabled={!selectedDeletedIds.size || busy === 'recover'}
                   onClick={() =>
                     setRecoverPrompt({
-                      ids: [...selectedDeletedIds],
-                      label: `${selectedDeletedIds.size} selected message(s)`
+                      role: deletedRole || undefined,
+                      conversationId: deletedConversationFilter || undefined,
+                      from: deletedFrom || undefined,
+                      to: deletedTo || undefined,
+                      label: deletedConversationFilter
+                        ? `messages in ${conversationTitle(deletedConversationFilter)}`
+                        : deletedRole
+                          ? `${deletedRole.toLowerCase()} messages`
+                          : 'all deleted messages'
                     })
                   }
+                  disabled={busy === 'recover' || visibleDeleted.length === 0}
                 >
-                  <RotateCcw size={14} /> Recover selected
+                  <RotateCcw size={14} /> Recover filtered
                 </Button>
                 <Button
                   variant="danger"
-                  disabled={!selectedDeletedIds.size || busy === 'purge'}
-                  onClick={() => void purgeDeleted([...selectedDeletedIds])}
+                  onClick={() =>
+                    void purgeDeleted(undefined, deletedRole || undefined, {
+                      conversationId: deletedConversationFilter || undefined,
+                      from: deletedFrom || undefined,
+                      to: deletedTo || undefined
+                    })
+                  }
+                  disabled={busy === 'purge' || visibleDeleted.length === 0}
                 >
-                  <Trash2 size={14} /> Delete selected
+                  <Trash2 size={14} /> Delete filtered forever
                 </Button>
-              </>
-            )}
-            <span className="muted text-xs">
-              Pick a chat on the left. Restore asks which side gets the messages back.
-            </span>
-          </div>
-
-          <div className="admin-chat-workspace mt-4">
-            <aside className="admin-chat-sidebar" aria-label="Deleted chats">
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-white/45">
-                  Chats
-                </p>
-                <Badge tone={deletedGroups.length ? 'accent' : 'neutral'}>
-                  {deletedGroups.length}
-                </Badge>
-              </div>
-              <button
-                type="button"
-                className={`admin-chat-pick ${!activeDeletedConversationId ? 'is-active' : ''}`}
-                onClick={() => selectDeletedChat('')}
-              >
-                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-white/5 text-white/70">
-                  <MessageCircle size={15} />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium">All chats</span>
-                  <span className="muted block text-[11px]">
-                    {deletedByFilters.length} deleted message
-                    {deletedByFilters.length === 1 ? '' : 's'}
-                  </span>
-                </span>
-              </button>
-              <div className="admin-chat-list">
-                {deletedGroups.map((group) => {
-                  const preview = group.messages.reduce((newest, message) =>
-                    Date.parse(message.createdAt) > Date.parse(newest.createdAt) ? message : newest
-                  );
-                  const previewName =
-                    preview.sender?.displayName || preview.sender?.username || preview.senderId;
-                  return (
-                    <button
-                      key={group.conversationId}
-                      type="button"
-                      className={`admin-chat-pick ${
-                        activeDeletedConversationId === group.conversationId ? 'is-active' : ''
-                      }`}
-                      onClick={() => selectDeletedChat(group.conversationId)}
-                    >
-                      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-fuchsia-500/15 text-[11px] font-semibold uppercase text-fuchsia-100">
-                        {conversationTitle(group.conversationId).slice(0, 2)}
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium">
-                          {conversationTitle(group.conversationId)}
-                        </span>
-                        <span className="muted block truncate text-[11px]">
-                          {previewName}: {preview.content || 'Attachment'}
-                        </span>
-                      </span>
-                      <span className="shrink-0 rounded-full bg-white/5 px-1.5 py-0.5 text-[10px] text-white/60">
-                        {group.messages.length}
-                      </span>
-                    </button>
-                  );
-                })}
-                {!deletedGroups.length && (
-                  <p className="muted px-2 py-6 text-center text-xs">No chats in the Recycle Bin.</p>
+                {(deletedRole || deletedFrom || deletedTo || deletedConversationFilter) && (
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      setDeletedRole('');
+                      setDeletedFrom('');
+                      setDeletedTo('');
+                      setDeletedConversationFilter('');
+                      setActiveDeletedConversationId('');
+                      setSelectedDeletedIds(new Set());
+                      setDeletedMobileChatOpen(false);
+                    }}
+                  >
+                    <X size={14} /> Clear filters
+                  </Button>
                 )}
               </div>
-            </aside>
+            </div>
 
-            <section className="admin-chat-thread" aria-label="Deleted messages">
-              <header className="admin-chat-thread-head">
-                <div className="min-w-0">
-                  <p className="eyebrow">Deleted thread</p>
-                  <h3 className="mt-0.5 truncate text-base font-semibold">
-                    {activeDeletedGroup
-                      ? conversationTitle(activeDeletedGroup.conversationId)
-                      : 'All deleted chats'}
-                  </h3>
-                  <p className="muted mt-0.5 text-[11px]">
-                    {threadMessages.length} message{threadMessages.length === 1 ? '' : 's'} ·{' '}
-                    {visibleDeleted.length} in filter
-                  </p>
+            <div className="recycle-selection-bar">
+              <div className="recycle-selection-main">
+                <Button
+                  variant={deletedSelectMode ? 'primary' : 'ghost'}
+                  onClick={() => {
+                    setDeletedSelectMode((value) => !value);
+                    setSelectedDeletedIds(new Set());
+                  }}
+                >
+                  <ListChecks size={15} />
+                  {deletedSelectMode ? 'Done selecting' : 'Select messages'}
+                </Button>
+                {deletedSelectMode && (
+                  <>
+                    <Button
+                      disabled={!threadMessages.length}
+                      onClick={() =>
+                        setSelectedDeletedIds(
+                          selectedDeletedIds.size === threadMessages.length
+                            ? new Set()
+                            : new Set(threadMessages.map((message) => message.id))
+                        )
+                      }
+                    >
+                      {selectedDeletedIds.size === threadMessages.length && threadMessages.length > 0
+                        ? 'Clear all'
+                        : 'Select all'}
+                    </Button>
+                    <span className="muted text-xs">{selectedDeletedIds.size} selected</span>
+                  </>
+                )}
+              </div>
+              {deletedSelectMode && (
+                <div className="recycle-bulk-actions">
+                  <Button
+                    variant="primary"
+                    disabled={!selectedDeletedIds.size || busy === 'recover'}
+                    onClick={() =>
+                      setRecoverPrompt({
+                        ids: [...selectedDeletedIds],
+                        label: `${selectedDeletedIds.size} selected message(s)`
+                      })
+                    }
+                  >
+                    <RotateCcw size={14} /> Recover selected
+                  </Button>
+                  <Button
+                    variant="danger"
+                    disabled={!selectedDeletedIds.size || busy === 'purge'}
+                    onClick={() => void purgeDeleted([...selectedDeletedIds])}
+                  >
+                    <Trash2 size={14} /> Delete selected
+                  </Button>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  {activeDeletedGroup && (
-                    <>
-                      <Button
-                        className="!px-2.5 !py-1.5 text-xs"
-                        onClick={() =>
-                          setRecoverPrompt({
-                            ids: activeDeletedGroup.messages.map((message) => message.id),
-                            label: `all messages in ${conversationTitle(
-                              activeDeletedGroup.conversationId
-                            )}`
-                          })
-                        }
-                        disabled={busy === 'recover'}
+              )}
+              <p className="recycle-hint">
+                Pick a chat, then restore or purge a whole thread or just a few messages. Restore
+                asks which side should get them back.
+              </p>
+            </div>
+
+            <div
+              className={`recycle-workspace ${deletedMobileChatOpen ? 'is-chat-open' : ''}`}
+            >
+              <aside className="recycle-chats" aria-label="Deleted chats">
+                <div className="recycle-chats-head">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-white/45">
+                    Chats
+                  </p>
+                  <Badge tone={deletedGroups.length ? 'accent' : 'neutral'}>
+                    {deletedGroups.length}
+                  </Badge>
+                </div>
+                <button
+                  type="button"
+                  className={`recycle-chat-pick ${!activeDeletedConversationId ? 'is-active' : ''}`}
+                  onClick={() => selectDeletedChat('')}
+                >
+                  <span className="recycle-chat-avatar">
+                    <MessageCircle size={15} />
+                  </span>
+                  <span className="recycle-chat-copy">
+                    <strong>All chats</strong>
+                    <small>
+                      {deletedByFilters.length} deleted message
+                      {deletedByFilters.length === 1 ? '' : 's'}
+                    </small>
+                  </span>
+                </button>
+                <div className="recycle-chat-list">
+                  {deletedGroups.map((group) => {
+                    const preview = group.messages.reduce((newest, message) =>
+                      Date.parse(message.createdAt) > Date.parse(newest.createdAt) ? message : newest
+                    );
+                    const previewName =
+                      preview.sender?.displayName || preview.sender?.username || preview.senderId;
+                    return (
+                      <button
+                        key={group.conversationId}
+                        type="button"
+                        className={`recycle-chat-pick ${
+                          activeDeletedConversationId === group.conversationId ? 'is-active' : ''
+                        }`}
+                        onClick={() => selectDeletedChat(group.conversationId)}
                       >
-                        <RotateCcw size={13} /> Recover all
-                      </Button>
-                      <Button
-                        variant="danger"
-                        className="!px-2.5 !py-1.5 text-xs"
-                        onClick={() =>
-                          void purgeDeleted(
-                            activeDeletedGroup.messages.map((message) => message.id)
-                          )
-                        }
-                        disabled={busy === 'purge'}
-                      >
-                        <Trash2 size={13} /> Delete forever
-                      </Button>
-                    </>
+                        <span className="recycle-chat-avatar is-conversation">
+                          {conversationTitle(group.conversationId).slice(0, 2)}
+                        </span>
+                        <span className="recycle-chat-copy">
+                          <strong>{conversationTitle(group.conversationId)}</strong>
+                          <small>
+                            {previewName}: {preview.content || 'Attachment'}
+                          </small>
+                        </span>
+                        <span className="recycle-chat-count">{group.messages.length}</span>
+                      </button>
+                    );
+                  })}
+                  {!deletedGroups.length && (
+                    <p className="muted px-2 py-6 text-center text-xs">
+                      No chats in the Recycle Bin.
+                    </p>
                   )}
                 </div>
-              </header>
+              </aside>
 
-              <div className="admin-chat-thread-body">
-                {threadMessages.map((message) => {
-                  const isHost = message.sender?.role === 'HOST';
-                  const senderName =
-                    message.sender?.displayName || message.sender?.username || message.senderId;
-                  const hiddenNames =
-                    message.hides
-                      ?.map((hide) => hide.user?.username || 'account')
-                      .join(', ') || '';
-                  return (
-                    <div
-                      key={message.id}
-                      className={`admin-deleted-row ${isHost ? 'is-host' : ''}`}
+              <section className="recycle-thread" aria-label="Deleted messages">
+                <header className="recycle-thread-head">
+                  <div className="recycle-thread-title">
+                    <button
+                      type="button"
+                      className="icon-btn recycle-chat-back"
+                      onClick={showDeletedChatList}
+                      aria-label="Back to deleted chats"
                     >
-                      {!isHost && (
-                        <span className="mb-1 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/10 text-[10px] font-semibold uppercase text-white/70">
-                          {senderName.slice(0, 2)}
-                        </span>
-                      )}
-                      {deletedSelectMode && (
-                        <input
-                          type="checkbox"
-                          checked={selectedDeletedIds.has(message.id)}
-                          onChange={() => toggleDeletedSelected(message.id)}
-                          className="mb-6 h-4 w-4 shrink-0 accent-fuchsia-400"
-                          aria-label={`Select deleted message from ${senderName}`}
-                        />
-                      )}
+                      <ChevronLeft size={18} />
+                    </button>
+                    <div className="min-w-0">
+                      <p className="eyebrow">Deleted thread</p>
+                      <h3 className="mt-0.5 truncate text-base font-semibold">
+                        {activeDeletedGroup
+                          ? conversationTitle(activeDeletedGroup.conversationId)
+                          : 'All deleted chats'}
+                      </h3>
+                      <p className="muted mt-0.5 text-[11px]">
+                        {threadMessages.length} message{threadMessages.length === 1 ? '' : 's'} ·{' '}
+                        {visibleDeleted.length} in filter
+                      </p>
+                    </div>
+                  </div>
+                  <div className="recycle-thread-actions">
+                    {activeDeletedGroup && (
+                      <>
+                        <Button
+                          className="!px-2.5 !py-1.5 text-xs"
+                          onClick={() =>
+                            setRecoverPrompt({
+                              ids: activeDeletedGroup.messages.map((message) => message.id),
+                              label: `all messages in ${conversationTitle(
+                                activeDeletedGroup.conversationId
+                              )}`
+                            })
+                          }
+                          disabled={busy === 'recover'}
+                        >
+                          <RotateCcw size={13} /> Recover all
+                        </Button>
+                        <Button
+                          variant="danger"
+                          className="!px-2.5 !py-1.5 text-xs"
+                          onClick={() =>
+                            void purgeDeleted(
+                              activeDeletedGroup.messages.map((message) => message.id)
+                            )
+                          }
+                          disabled={busy === 'purge'}
+                        >
+                          <Trash2 size={13} /> Delete forever
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </header>
+
+                <div className="recycle-thread-body">
+                  {threadMessages.map((message) => {
+                    const isHost = message.sender?.role === 'HOST';
+                    const senderName =
+                      message.sender?.displayName || message.sender?.username || message.senderId;
+                    const hiddenNames =
+                      message.hides
+                        ?.map((hide) => hide.user?.username || 'account')
+                        .join(', ') || '';
+                    const selected = selectedDeletedIds.has(message.id);
+                    return (
                       <div
-                        className={[
-                          'admin-deleted-bubble relative w-fit min-w-0 max-w-full rounded-2xl border px-3.5 py-2.5 shadow-lg',
-                          isHost
-                            ? 'rounded-br-md border-amber-300/20 bg-gradient-to-br from-amber-700/80 to-orange-900/80 text-white'
-                            : 'rounded-bl-md border-white/10 bg-[#241f31] text-white/90',
-                          deletedSelectMode && selectedDeletedIds.has(message.id)
-                            ? 'ring-2 ring-fuchsia-400 ring-offset-2 ring-offset-black/40'
-                            : ''
-                        ].join(' ')}
+                        key={message.id}
+                        className={`recycle-message-card ${isHost ? 'is-host' : ''} ${
+                          selected ? 'is-selected' : ''
+                        }`}
                       >
-                        <div
-                          className={`admin-deleted-meta flex min-w-0 flex-wrap items-center gap-2 text-[11px] ${
-                            isHost ? 'justify-end' : ''
-                          }`}
-                        >
-                          <span className="admin-deleted-name font-semibold text-white/90">
-                            {senderName}
-                          </span>
-                          <Badge tone={isHost ? 'warn' : 'neutral'}>
-                            {isHost ? 'Host' : 'User'}
-                          </Badge>
-                          <span className="shrink-0 text-white/50">
-                            {formatDateTime(message.createdAt)}
-                          </span>
-                        </div>
-                        <p className="admin-deleted-text text-sm leading-6">
-                          {message.content ||
-                            (message.attachmentKind === 'IMAGE'
-                              ? '📷 Photo'
-                              : message.attachmentKind === 'VIDEO'
-                                ? '🎬 Video'
-                                : message.attachmentKind === 'AUDIO'
-                                  ? '🎙️ Voice message'
-                                  : message.attachmentName
-                                    ? `📎 ${message.attachmentName}`
-                                    : 'Attachment')}
-                        </p>
-                        <div
-                          className={`admin-deleted-actions mt-1.5 flex min-w-0 flex-wrap items-center gap-2 text-[10px] text-white/55 ${
-                            isHost ? 'justify-end' : ''
-                          }`}
-                        >
-                          {message.hides?.length ? (
-                            <span
-                              className="admin-deleted-hidden text-amber-200/70"
-                              title={hiddenNames}
-                            >
-                              hidden for {hiddenNames}
+                        {deletedSelectMode && (
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            onChange={() => toggleDeletedSelected(message.id)}
+                            className="recycle-checkbox"
+                            aria-label={`Select deleted message from ${senderName}`}
+                          />
+                        )}
+                        <span className="recycle-message-avatar">{senderName.slice(0, 2)}</span>
+                        <div className="recycle-message-content">
+                          <div className="recycle-message-head">
+                            <span className="recycle-message-name">{senderName}</span>
+                            <Badge tone={isHost ? 'warn' : 'neutral'}>
+                              {isHost ? 'Host' : 'User'}
+                            </Badge>
+                            <span className="recycle-message-time">
+                              {formatDateTime(message.createdAt)}
                             </span>
-                          ) : null}
-                          <button
-                            type="button"
-                            className="inline-flex items-center gap-1 rounded-full bg-black/25 px-2 py-0.5 text-emerald-200 transition hover:bg-emerald-500/25 hover:text-emerald-100"
-                            onClick={() =>
-                              setRecoverPrompt({ ids: [message.id], label: 'this message' })
-                            }
-                            disabled={busy === 'recover'}
-                          >
-                            <RotateCcw size={11} /> Recover
-                          </button>
-                          <button
-                            type="button"
-                            className="inline-flex items-center gap-1 rounded-full bg-black/25 px-2 py-0.5 text-rose-200 transition hover:bg-rose-500/25 hover:text-rose-100"
-                            onClick={() => void purgeDeleted([message.id])}
-                            disabled={busy === 'purge'}
-                            aria-label="Delete message forever"
-                          >
-                            <Trash2 size={11} />
-                          </button>
+                          </div>
+                          <p className="recycle-message-text">
+                            {message.content ||
+                              (message.attachmentKind === 'IMAGE'
+                                ? '📷 Photo'
+                                : message.attachmentKind === 'VIDEO'
+                                  ? '🎬 Video'
+                                  : message.attachmentKind === 'AUDIO'
+                                    ? '🎙️ Voice message'
+                                    : message.attachmentName
+                                      ? `📎 ${message.attachmentName}`
+                                      : 'Attachment')}
+                          </p>
+                          <div className="recycle-message-foot">
+                            {message.hides?.length ? (
+                              <span
+                                className="recycle-hidden-note"
+                                title={hiddenNames}
+                              >
+                                hidden for {hiddenNames}
+                              </span>
+                            ) : null}
+                            <button
+                              type="button"
+                              className="recycle-action-btn recover"
+                              onClick={() =>
+                                setRecoverPrompt({ ids: [message.id], label: 'this message' })
+                              }
+                              disabled={busy === 'recover'}
+                            >
+                              <RotateCcw size={11} /> Recover
+                            </button>
+                            <button
+                              type="button"
+                              className="recycle-action-btn purge"
+                              onClick={() => void purgeDeleted([message.id])}
+                              disabled={busy === 'purge'}
+                              aria-label="Delete message forever"
+                            >
+                              <Trash2 size={11} />
+                            </button>
+                          </div>
                         </div>
                       </div>
-                      {isHost && (
-                        <span className="mb-1 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-amber-400/20 text-[10px] font-semibold uppercase text-amber-100">
-                          {senderName.slice(0, 2)}
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
-                {!threadMessages.length && (
-                  <EmptyState
-                    icon={<RotateCcw size={24} />}
-                    title="No deleted messages"
-                    description="Messages deleted by either side will appear here. Try another chat or clear the filters."
-                  />
-                )}
-              </div>
-            </section>
-          </div>
-        </Panel>
+                    );
+                  })}
+                  {!threadMessages.length && (
+                    <EmptyState
+                      icon={<RotateCcw size={24} />}
+                      title="No deleted messages"
+                      description="Messages deleted by either side will appear here. Try another chat or clear the filters."
+                    />
+                  )}
+                </div>
+              </section>
+            </div>
+          </Panel>
+        </div>
       )}
 
       {tab === 'users' && (

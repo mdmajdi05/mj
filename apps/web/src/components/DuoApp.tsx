@@ -70,12 +70,18 @@ function DuoShell({ hostMode }: { hostMode: boolean }) {
   // The Host console is a workspace, not a reading column. Let it use the full
   // width so the sidebar, KPI grid and chat-style Recycle Bin have real room.
   const wide = immersive || duo.screen === 'ADMIN';
+  // Immersive chat/study surfaces go edge-to-edge on phones so the header,
+  // composer and media bubbles get every pixel they can. The admin console and
+  // the other screens keep the comfortable page gutter.
+  const shellPadding = immersive
+    ? 'px-0 pt-0 sm:px-3 sm:pt-2 md:px-6'
+    : 'px-3 pt-2 md:px-6 min-h-screen pb-10';
 
   return (
     <div className="shell">
       <div
-        className={`mx-auto w-full ${wide ? 'max-w-none' : 'max-w-3xl'} px-3 pt-2 md:px-6 ${
-          immersive ? 'app-frame-chat' : 'min-h-screen pb-10'
+        className={`mx-auto w-full ${wide ? 'max-w-none' : 'max-w-3xl'} ${shellPadding} ${
+          immersive ? 'app-frame-chat' : ''
         }`}
       >
         <AppHeader />
