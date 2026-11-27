@@ -244,8 +244,8 @@ chatRouter.get(
     // newest messages instead of the oldest 500.
     const requestedLimit = Number(req.query.limit);
     const limit = Number.isFinite(requestedLimit)
-      ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 200)
-      : 60;
+      ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 500)
+      : 500;
 
     const beforeId = typeof req.query.beforeId === 'string' ? req.query.beforeId : '';
     const beforeRaw = typeof req.query.before === 'string' ? req.query.before : '';

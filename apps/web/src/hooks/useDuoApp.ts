@@ -435,7 +435,7 @@ export function useDuoApp() {
       return;
     }
     // Newest page first; older history is fetched on demand while scrolling up.
-    const page = await api<MessagesPage>('/chat/messages?limit=60');
+    const page = await api<MessagesPage>('/chat/messages?limit=500');
     if (!chatUnlockedRef.current) return;
     const pageOldest = page.messages[0];
     let cachedOldest: Message | null = null;
@@ -484,7 +484,7 @@ export function useDuoApp() {
     setLoadingOlder(true);
     try {
       const params = new URLSearchParams({
-        limit: '60',
+        limit: '500',
         before: oldest.createdAt,
         beforeId: oldest.id
       });
