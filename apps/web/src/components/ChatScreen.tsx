@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive,
   BookOpen,
@@ -52,6 +52,8 @@ type DisplayItem = {
   key: string;
   messages: Message[];
   media: boolean;
+  /** Set only on the first item of a new calendar day. */
+  dayLabel?: string;
 };
 
 type ActionMenu = {
@@ -65,6 +67,30 @@ type ActionMenu = {
 const EDIT_WINDOW = 5 * 60 * 1000;
 const isMediaOnly = (message: Message) =>
   (message.attachmentKind === 'IMAGE' || message.attachmentKind === 'VIDEO') && !message.content;
+
+/** Local calendar day key, so a divider never depends on the server timezone. */
+function messageDayKey(iso: string) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+/** WhatsApp-style label: Today, Yesterday, then a readable date. */
+function messageDayLabel(iso: string) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  const today = new Date();
+  const startOfDay = (value: Date) =>
+    new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  const days = Math.round((startOfDay(today) - startOfDay(date)) / 86_400_000);
+  if (days === 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  return date.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    year: date.getFullYear() === today.getFullYear() ? undefined : 'numeric'
+  });
+}
 
 export function ChatScreen() {
   const duo = useDuo();
@@ -101,6 +127,8 @@ export function ChatScreen() {
   const atBottomRef = useRef(true);
   const lastLengthRef = useRef(0);
   const loadedOnceRef = useRef(false);
+  const olderScrollRef = useRef<{ height: number; top: number } | null>(null);
+  const wasLoadingOlderRef = useRef(false);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -151,14 +179,26 @@ export function ChatScreen() {
   const displayItems = useMemo(() => {
     const items: DisplayItem[] = [];
     let bucket: Message[] = [];
+    let lastDay = '';
+    const push = (item: DisplayItem) => {
+      const key = messageDayKey(item.messages[0].createdAt);
+      if (key && key !== lastDay) {
+        item.dayLabel = messageDayLabel(item.messages[0].createdAt);
+        lastDay = key;
+      }
+      items.push(item);
+    };
     const flush = () => {
       if (!bucket.length) return;
-      items.push({ key: bucket[0].id, messages: bucket, media: true });
+      push({ key: bucket[0].id, messages: bucket, media: true });
       bucket = [];
     };
     for (const message of chatMessages) {
       if (isMediaOnly(message)) {
-        if (bucket.length && bucket[bucket.length - 1].senderId === message.senderId) {
+        const sameDay =
+          bucket.length > 0 &&
+          messageDayKey(bucket[0].createdAt) === messageDayKey(message.createdAt);
+        if (bucket.length && sameDay && bucket[bucket.length - 1].senderId === message.senderId) {
           bucket.push(message);
         } else {
           flush();
@@ -166,7 +206,7 @@ export function ChatScreen() {
         }
       } else {
         flush();
-        items.push({ key: message.id, messages: [message], media: false });
+        push({ key: message.id, messages: [message], media: false });
       }
     }
     flush();
@@ -182,7 +222,13 @@ export function ChatScreen() {
   }, [duo.resumeSessionIfNeeded]);
 
   function scrollToBottom(behavior: ScrollBehavior = 'smooth') {
-    bottomRef.current?.scrollIntoView({ behavior, block: 'end' });
+    if (behavior === 'auto' && scrollRef.current) {
+      // CSS scroll-behavior is smooth, so jump directly to avoid animating
+      // through the whole history when the newest page first arrives.
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    } else {
+      bottomRef.current?.scrollIntoView({ behavior, block: 'end' });
+    }
     setNewCount(0);
     setAtBottom(true);
     atBottomRef.current = true;
@@ -192,16 +238,46 @@ export function ChatScreen() {
     const length = chatMessages.length;
     const previous = lastLengthRef.current;
     lastLengthRef.current = length;
-    if (!loadedOnceRef.current && length > 0) {
+    if (!length) {
+      loadedOnceRef.current = false;
+      return;
+    }
+    if (!loadedOnceRef.current) {
       loadedOnceRef.current = true;
       scrollToBottom('auto');
       return;
     }
+    // Older history was prepended: keep the reader exactly where they were.
+    if (olderScrollRef.current) return;
     if (length > previous) {
       if (atBottomRef.current) scrollToBottom('smooth');
       else setNewCount((count) => count + (length - previous));
     }
   }, [chatMessages.length]);
+
+  useEffect(() => {
+    const wasLoading = wasLoadingOlderRef.current;
+    wasLoadingOlderRef.current = duo.loadingOlder;
+    if (!wasLoading || duo.loadingOlder) return;
+    const element = scrollRef.current;
+    const snapshot = olderScrollRef.current;
+    olderScrollRef.current = null;
+    if (!element || !snapshot) return;
+    // Preserve the viewport after the older page is inserted above it.
+    const behavior = element.style.scrollBehavior;
+    element.style.scrollBehavior = 'auto';
+    element.scrollTop = snapshot.top + (element.scrollHeight - snapshot.height);
+    element.style.scrollBehavior = behavior;
+  }, [duo.loadingOlder]);
+
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element || !duo.hasMoreMessages || duo.loadingOlder || olderScrollRef.current) return;
+    // If the first page does not fill the viewport there is no scrollbar to
+    // reach the top with, so fetch earlier pages until the screen is full.
+    if (element.scrollHeight > element.clientHeight + 40) return;
+    void duo.loadOlderMessages().catch(() => undefined);
+  }, [chatMessages.length, duo.hasMoreMessages, duo.loadingOlder]);
 
   useEffect(() => {
     if (duo.peerTyping && atBottomRef.current) scrollToBottom('smooth');
@@ -243,6 +319,15 @@ export function ChatScreen() {
     atBottomRef.current = near;
     setAtBottom(near);
     if (near) setNewCount(0);
+
+    // WhatsApp-style history loading: reaching the top fetches the page before
+    // the oldest cached message without moving the reader's viewport.
+    const nearTop = element.scrollTop < 120;
+    const canScroll = element.scrollHeight > element.clientHeight + 40;
+    if (nearTop && canScroll && duo.hasMoreMessages && !duo.loadingOlder && !olderScrollRef.current) {
+      olderScrollRef.current = { height: element.scrollHeight, top: element.scrollTop };
+      void duo.loadOlderMessages().catch(() => undefined);
+    }
   }
 
   function send() {
@@ -814,49 +899,61 @@ export function ChatScreen() {
         <div className="panel chat-panel chat-panel-flat">
           <div className="chat-scroll-wrap">
             <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
+            {duo.loadingOlder && (
+              <div className="chat-history-loader" aria-live="polite">
+                <span className="chat-history-spinner" aria-hidden />
+                <span>Loading earlier messages…</span>
+              </div>
+            )}
             {displayItems.map((item) => {
               const first = item.messages[0];
               const mine = first.senderId === duo.user?.id;
               const selected = item.messages.some((message) => selectedIds.has(message.id));
               const flash = item.messages.some((message) => message.id === flashId);
               return (
-                <MessageRow
-                  key={item.key}
-                  item={item}
-                  mine={mine}
-                  otherName={otherName}
-                  userId={duo.user?.id || ''}
-                  selected={selected}
-                  selectMode={selectMode}
-                  flash={flash}
-                  onSelect={() => item.messages.forEach((message) => toggleSelected(message.id))}
-                  onReply={() => startReply(first)}
-                  onEdit={item.messages.length === 1 ? () => startEdit(first) : undefined}
-                  onDelete={() =>
-                    setConfirmAction({
-                      type: 'message',
-                      ids: item.messages.map((message) => message.id),
-                      scope: 'ME'
-                    })
-                  }
-                  onMenu={(x, y) =>
-                    openActionMenu(
-                      first,
-                      item.messages.map((message) => message.id),
-                      item.messages.length === 1,
-                      x,
-                      y
-                    )
-                  }
-                  onQuote={scrollToMessage}
-                  onOpenMedia={(messages, index) => {
-                    if (selectMode) {
-                      messages.forEach((message) => toggleSelected(message.id));
-                      return;
+                <Fragment key={item.key}>
+                  {item.dayLabel && (
+                    <div className="chat-day-divider" role="separator">
+                      <span>{item.dayLabel}</span>
+                    </div>
+                  )}
+                  <MessageRow
+                    item={item}
+                    mine={mine}
+                    otherName={otherName}
+                    userId={duo.user?.id || ''}
+                    selected={selected}
+                    selectMode={selectMode}
+                    flash={flash}
+                    onSelect={() => item.messages.forEach((message) => toggleSelected(message.id))}
+                    onReply={() => startReply(first)}
+                    onEdit={item.messages.length === 1 ? () => startEdit(first) : undefined}
+                    onDelete={() =>
+                      setConfirmAction({
+                        type: 'message',
+                        ids: item.messages.map((message) => message.id),
+                        scope: 'ME'
+                      })
                     }
-                    setLightbox({ items: messages, index });
-                  }}
-                />
+                    onMenu={(x, y) =>
+                      openActionMenu(
+                        first,
+                        item.messages.map((message) => message.id),
+                        item.messages.length === 1,
+                        x,
+                        y
+                      )
+                    }
+                    onQuote={scrollToMessage}
+                    onOpenMedia={(messages, index) => {
+                      if (selectMode) {
+                        messages.forEach((message) => toggleSelected(message.id));
+                        return;
+                      }
+                      setLightbox({ items: messages, index });
+                    }}
+                  />
+                </Fragment>
               );
             })}
             {!chatMessages.length && (

@@ -24,6 +24,7 @@ import type {
   IncomingCall,
   Message,
   MessageDestination,
+  MessagesPage,
   Notification,
   Permission,
   Preferences,
@@ -60,12 +61,36 @@ const defaultPreferences: Preferences = {
   adminSoundNotifications: true
 };
 
+/**
+ * Combine a freshly fetched page with everything already cached. Incoming rows
+ * win by id (they may carry newer read/delivery state), then the list is sorted
+ * the same way the server paginates so the oldest message stays first.
+ */
+function mergeMessageLists(current: Message[], incoming: Message[]): Message[] {
+  if (!incoming.length) return current;
+  const incomingById = new Map(incoming.map((message) => [message.id, message]));
+  const known = new Set(current.map((message) => message.id));
+  const merged = current.map((message) => incomingById.get(message.id) ?? message);
+  for (const message of incoming) {
+    if (!known.has(message.id)) merged.push(message);
+  }
+  merged.sort((left, right) => {
+    const leftTime = Date.parse(left.createdAt) || 0;
+    const rightTime = Date.parse(right.createdAt) || 0;
+    if (leftTime !== rightTime) return leftTime - rightTime;
+    return left.id.localeCompare(right.id);
+  });
+  return merged;
+}
+
 export function useDuoApp() {
   const [user, setUser] = useState<User | null>(null);
   const [booting, setBooting] = useState(true);
   const [screen, setScreenState] = useState<Screen>('HOME');
   const [menuOpen, setMenuOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [gameMessages, setGameMessages] = useState<GameMessage[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [permissions, setPermissions] = useState<Permission[]>([]);
@@ -117,6 +142,9 @@ export function useDuoApp() {
   const screenRef = useRef<Screen>('HOME');
   const prefsRef = useRef<Preferences>(defaultPreferences);
   const activePeerRef = useRef('');
+  const messagesRef = useRef<Message[]>([]);
+  const hasMoreMessagesRef = useRef(false);
+  const loadingOlderRef = useRef(false);
   const butterflyIds = useRef(new Set<string>());
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -146,6 +174,8 @@ export function useDuoApp() {
   screenRef.current = screen;
   prefsRef.current = prefs;
   activePeerRef.current = activePeerId;
+  messagesRef.current = messages;
+  hasMoreMessagesRef.current = hasMoreMessages;
   callStateRef.current = callState;
   micOnRef.current = micOn;
   callMutedRef.current = callMuted;
@@ -168,6 +198,9 @@ export function useDuoApp() {
     setChatSessionUnlocked(false);
     // Drop decrypted chat content from memory as soon as the session closes.
     setMessages([]);
+    setHasMoreMessages(false);
+    setLoadingOlder(false);
+    loadingOlderRef.current = false;
     setUnread(0);
   }, []);
 
@@ -392,17 +425,82 @@ export function useDuoApp() {
     }, 5200);
   }, []);
 
-  const loadMessages = useCallback(async () => {
-    const current = userRef.current;
-    if (!current) return;
+  const loadMessages = useCallback(async (options?: { reset?: boolean }) => {
+    if (!userRef.current) return;
     // Refresh proof: only an in-memory promo unlock may load private messages.
     if (!chatUnlockedRef.current) {
       setMessages([]);
+      setHasMoreMessages(false);
+      hasMoreMessagesRef.current = false;
       return;
     }
-    const rows = await api<Message[]>('/chat/messages');
-    setMessages(rows);
-    setUnread(rows.filter((message) => message.senderId !== current.id && !message.readAt).length);
+    // Newest page first; older history is fetched on demand while scrolling up.
+    const page = await api<MessagesPage>('/chat/messages?limit=60');
+    if (!chatUnlockedRef.current) return;
+    const pageOldest = page.messages[0];
+    let cachedOldest: Message | null = null;
+    if (!options?.reset) {
+      for (const message of messagesRef.current) {
+        if (message.destination !== 'CHAT') continue;
+        if (!cachedOldest || Date.parse(message.createdAt) < Date.parse(cachedOldest.createdAt)) {
+          cachedOldest = message;
+        }
+      }
+    }
+    // If the cache already reaches further back than this page, keep the known
+    // "more history" flag instead of resetting it and refetching duplicates.
+    const keepsLoadedHistory = Boolean(
+      pageOldest &&
+        cachedOldest &&
+        Date.parse(cachedOldest.createdAt) < Date.parse(pageOldest.createdAt)
+    );
+    const previousHasMore = hasMoreMessagesRef.current;
+    const nextHasMore = keepsLoadedHistory ? previousHasMore : page.hasMore;
+    setMessages((previous) => {
+      // Always merge so a socket message that landed while this request was in
+      // flight can never be wiped by the page response.
+      const next = mergeMessageLists(previous, page.messages);
+      messagesRef.current = next;
+      return next;
+    });
+    setHasMoreMessages(nextHasMore);
+    hasMoreMessagesRef.current = nextHasMore;
+  }, []);
+
+  const loadOlderMessages = useCallback(async () => {
+    if (!userRef.current || !chatUnlockedRef.current) return;
+    if (loadingOlderRef.current || !hasMoreMessagesRef.current) return;
+    // The oldest cached CHAT message is the cursor for the previous page.
+    let oldest: Message | null = null;
+    for (const message of messagesRef.current) {
+      if (message.destination !== 'CHAT') continue;
+      if (!oldest || Date.parse(message.createdAt) < Date.parse(oldest.createdAt)) {
+        oldest = message;
+      }
+    }
+    if (!oldest) return;
+
+    loadingOlderRef.current = true;
+    setLoadingOlder(true);
+    try {
+      const params = new URLSearchParams({
+        limit: '60',
+        before: oldest.createdAt,
+        beforeId: oldest.id
+      });
+      const page = await api<MessagesPage>(`/chat/messages?${params.toString()}`);
+      if (!chatUnlockedRef.current) return;
+      setMessages((previous) => {
+        const next = mergeMessageLists(previous, page.messages);
+        messagesRef.current = next;
+        return next;
+      });
+      setHasMoreMessages(page.hasMore);
+      hasMoreMessagesRef.current = page.hasMore;
+    } finally {
+      loadingOlderRef.current = false;
+      setLoadingOlder(false);
+    }
   }, []);
 
   const loadInbox = useCallback(async () => {
@@ -524,12 +622,15 @@ export function useDuoApp() {
       });
       setActivePeerId(peerId);
       setMessages([]);
+      messagesRef.current = [];
+      setHasMoreMessages(false);
+      hasMoreMessagesRef.current = false;
       setUnread(0);
       setPeerTyping(false);
       notifyTyping(false);
       await Promise.allSettled([
         loadSummary(),
-        loadMessages(),
+        loadMessages({ reset: true }),
         loadInbox(),
         loadContacts()
       ]);
@@ -665,6 +766,9 @@ export function useDuoApp() {
     lockChatSession();
     setScreen('HOME');
     setMessages([]);
+    messagesRef.current = [];
+    setHasMoreMessages(false);
+    hasMoreMessagesRef.current = false;
     setGameMessages([]);
     setNotifications([]);
     setPermissions([]);
@@ -831,6 +935,9 @@ export function useDuoApp() {
       chatUnlockedRef.current = false;
       setChatSessionUnlocked(false);
       setMessages([]);
+      messagesRef.current = [];
+      setHasMoreMessages(false);
+      hasMoreMessagesRef.current = false;
       setUnread(0);
     }
     setScreen('HOME');
@@ -1448,6 +1555,13 @@ export function useDuoApp() {
     socket.on('connect_error', () =>
       showError('Live connection unavailable. Check the API and network configuration.')
     );
+    socket.on('connect', () => {
+      // Reconnect catch-up: merge anything created while the socket was down so
+      // live chat never silently skips messages.
+      if (!chatUnlockedRef.current) return;
+      void loadMessages().catch(() => undefined);
+      void loadSummary().catch(() => undefined);
+    });
     socket.on('message:error', (payload: any) => showError(payload?.error || 'Message failed'));
     socket.on('game:error', (payload: any) => showError(payload?.error || 'Game event failed'));
 
@@ -1532,6 +1646,9 @@ export function useDuoApp() {
     socket.on('message:hidden', (payload: { ids?: string[]; all?: boolean }) => {
       if (payload?.all) {
         setMessages([]);
+        messagesRef.current = [];
+        setHasMoreMessages(false);
+        hasMoreMessagesRef.current = false;
         return;
       }
       const ids = payload?.ids ?? [];
@@ -1712,6 +1829,9 @@ export function useDuoApp() {
     });
     socket.on('chat:deleted', () => {
       setMessages([]);
+      messagesRef.current = [];
+      setHasMoreMessages(false);
+      hasMoreMessagesRef.current = false;
       setConversationStatus('DELETED');
       showNotice('The conversation history was permanently deleted by Host.');
     });
@@ -2193,6 +2313,9 @@ export function useDuoApp() {
       method: 'POST'
     });
     setMessages([]);
+    messagesRef.current = [];
+    setHasMoreMessages(false);
+    hasMoreMessagesRef.current = false;
     return result.count;
   }, []);
 
@@ -2262,6 +2385,9 @@ export function useDuoApp() {
   const deleteHistory = useCallback(async () => {
     const result = await api<{ count: number }>('/chat/history', { method: 'DELETE' });
     setMessages([]);
+    messagesRef.current = [];
+    setHasMoreMessages(false);
+    hasMoreMessagesRef.current = false;
     return result.count;
   }, []);
 
@@ -2496,6 +2622,9 @@ export function useDuoApp() {
     markInboxRead,
     changePassword,
     loadMessages,
+    loadOlderMessages,
+    hasMoreMessages,
+    loadingOlder,
     loadInbox,
     loadPermissions,
     loadNotifications,

@@ -63,6 +63,17 @@ export type Message = {
 
 export type GameMessage = Message;
 
+export type MessageCursor = {
+  createdAt: string;
+  id: string;
+};
+
+export type MessagesPage = {
+  messages: Message[];
+  hasMore: boolean;
+  nextCursor: MessageCursor | null;
+};
+
 export type Notification = {
   id: string;
   eventType: string;

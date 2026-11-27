@@ -9,7 +9,8 @@ import {
   ConversationStatus,
   MessageDestination,
   PermissionStatus,
-  Role
+  Role,
+  type Prisma
 } from '@prisma/client';
 import { asyncHandler } from '../lib/async-handler';
 import { HttpError } from '../lib/http-error';
@@ -231,21 +232,47 @@ chatRouter.get(
   asyncHandler(async (req: AuthRequest, res) => {
     const conversation = await findConversationFor(req.user!.id);
     if (!conversation) {
-      res.json([]);
+      res.json({ messages: [], hasMore: false, nextCursor: null });
       return;
     }
     const destination = req.query.destination === 'GAME'
       ? MessageDestination.GAME
       : MessageDestination.CHAT;
+
+    // Newest-first cursor pagination. The client starts with the latest page
+    // and walks backwards through history, so a large chat always opens on the
+    // newest messages instead of the oldest 500.
+    const requestedLimit = Number(req.query.limit);
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 200)
+      : 60;
+
+    const beforeId = typeof req.query.beforeId === 'string' ? req.query.beforeId : '';
+    const beforeRaw = typeof req.query.before === 'string' ? req.query.before : '';
+    const beforeDate = beforeRaw ? new Date(beforeRaw) : null;
+    const hasCursor = Boolean(
+      beforeId && beforeDate && !Number.isNaN(beforeDate.getTime())
+    );
+
+    const baseWhere: Prisma.MessageWhereInput = {
+      conversationId: conversation.id,
+      destination,
+      deletedAt: null,
+      hides: { none: { userId: req.user!.id } }
+    };
+
     const rows = await prisma.message.findMany({
-      where: {
-        conversationId: conversation.id,
-        destination,
-        deletedAt: null,
-        hides: { none: { userId: req.user!.id } }
-      },
-      orderBy: { createdAt: 'asc' },
-      take: 500,
+      where: hasCursor
+        ? {
+            ...baseWhere,
+            OR: [
+              { createdAt: { lt: beforeDate! } },
+              { createdAt: beforeDate!, id: { lt: beforeId } }
+            ]
+          }
+        : baseWhere,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
       include: {
         sender: { select: { username: true, role: true, displayName: true } },
         replyTo: {
@@ -259,7 +286,15 @@ chatRouter.get(
         }
       }
     });
-    res.json(rows);
+
+    const hasMore = rows.length > limit;
+    const page = (hasMore ? rows.slice(0, limit) : rows).reverse();
+    const oldest = page[0];
+    res.json({
+      messages: page,
+      hasMore,
+      nextCursor: oldest ? { createdAt: oldest.createdAt.toISOString(), id: oldest.id } : null
+    });
   })
 );
 
