@@ -290,6 +290,16 @@ export function AudioBubble({ message }: { message: Message }) {
 
       {failed && <span className="audio-error">Tap to retry</span>}
 
+      <a
+        className="audio-download"
+        href={mediaUrl(message.attachmentId!)}
+        download={message.attachmentName || 'voice-message'}
+        aria-label="Download voice message"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <Download size={15} />
+      </a>
+
       <audio
         ref={audioRef}
         src={mediaUrl(message.attachmentId!)}

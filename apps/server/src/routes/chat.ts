@@ -840,7 +840,11 @@ chatRouter.get(
     if (!allowed) throw new HttpError(404, 'Attachment not found');
 
     res.setHeader('Content-Type', media.mimeType);
-    res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+    // Media must not be written to the browser's disk cache. The only local
+    // copy is created by an explicit download from the chat UI.
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.setHeader('Accept-Ranges', 'bytes');
     const range = parseMediaRange(req.headers.range, media.size);
     if (range === 'unsatisfiable') {

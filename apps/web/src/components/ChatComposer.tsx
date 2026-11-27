@@ -17,7 +17,6 @@ import {
   X
 } from 'lucide-react';
 import type { Message } from '@/lib/types';
-import { Modal } from '@/components/ui';
 import { EmojiPicker } from '@/components/EmojiPicker';
 import {
   endMediaInteraction,
@@ -127,7 +126,6 @@ export function ChatComposer({
   const menuRef = useRef<HTMLDivElement | null>(null);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
   const emojiRef = useRef<HTMLDivElement | null>(null);
-  const cameraInputRef = useRef<HTMLInputElement | null>(null);
   const galleryRef = useRef<HTMLInputElement | null>(null);
   const attachRef = useRef<HTMLInputElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -177,6 +175,19 @@ export function ChatComposer({
     video.srcObject = stream;
     void video.play().catch(() => undefined);
   }, [cameraOpen, cameraReady]);
+
+  // Escape closes the full-screen camera, just like the native camera apps.
+  useEffect(() => {
+    if (!cameraOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeCamera();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [cameraOpen, captured?.url]);
 
   useEffect(() => {
     if (!menuOpen && !emojiOpen) return;
@@ -262,7 +273,7 @@ export function ChatComposer({
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error(
-          'This browser cannot open the camera. Use “Pick photo instead” to choose from the gallery.'
+          'This browser cannot open the camera. Choose a photo from the gallery instead.'
         );
       }
       if (!window.isSecureContext && window.location.hostname !== 'localhost') {
@@ -301,7 +312,7 @@ export function ChatComposer({
       const message = denied
         ? 'Camera permission is blocked. Allow Camera for this site in Chrome, then tap Try again. On Android/iOS also check the browser app permission in system Settings.'
         : error?.name === 'NotFoundError' || error?.name === 'OverconstrainedError'
-          ? 'No camera was found on this device. Use “Pick photo instead” to choose from the gallery.'
+          ? 'No camera was found on this device. Choose a photo from the gallery instead.'
           : error?.name === 'NotReadableError'
             ? 'The camera is already in use by another app. Close the other app and tap Try again.'
             : error?.message || 'Camera could not be started.';
@@ -528,15 +539,6 @@ export function ChatComposer({
   return (
     <div className="composer-wrap">
       {menu}
-      <input
-        ref={cameraInputRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        className="hidden"
-        onClick={() => holdMediaInteraction(120000)}
-        onChange={pickFiles}
-      />
       <input
         ref={galleryRef}
         type="file"
@@ -770,96 +772,154 @@ export function ChatComposer({
         )}
       </div>
 
-      <Modal
-        open={cameraOpen}
-        wide
-        title={captured ? 'Preview photo' : 'Take a photo'}
-        onClose={closeCamera}
-      >
-        <div className="camera-modal">
-          {captured ? (
-            <img src={captured.url} alt="Captured preview" className="camera-preview" />
-          ) : (
-            <>
-              <div className="camera-stage">
-                <video ref={videoRef} playsInline muted className="camera-preview" />
-                {cameraBusy && <span className="camera-status">Starting camera…</span>}
-                {!cameraBusy && cameraReady && (
-                  <button
-                    type="button"
-                    className="camera-switch"
-                    aria-label="Switch camera"
-                    onClick={() =>
-                      void startCamera(cameraFacing === 'environment' ? 'user' : 'environment')
-                    }
-                  >
-                    <RefreshCcw size={17} />
-                  </button>
+      {cameraOpen &&
+        createPortal(
+          <div
+            className="camera-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-label={captured ? 'Captured photo preview' : 'Camera'}
+          >
+            <div className={`camera-sheet ${captured ? 'is-preview' : ''}`}>
+              <div className="camera-topbar">
+                <button
+                  type="button"
+                  className="camera-round-btn"
+                  onClick={closeCamera}
+                  aria-label="Close camera"
+                >
+                  <X size={20} />
+                </button>
+                <div className="camera-top-title">
+                  <span className="camera-live-dot" aria-hidden />
+                  {captured ? 'Preview' : cameraReady ? 'Camera ready' : 'Camera'}
+                </div>
+                <button
+                  type="button"
+                  className="camera-round-btn"
+                  onClick={() =>
+                    void startCamera(cameraFacing === 'environment' ? 'user' : 'environment')
+                  }
+                  disabled={Boolean(captured) || cameraBusy || !cameraReady}
+                  aria-label="Switch camera"
+                >
+                  <RefreshCcw size={19} />
+                </button>
+              </div>
+
+              <div className="camera-viewport">
+                {captured ? (
+                  <img src={captured.url} alt="Captured preview" className="camera-preview" />
+                ) : (
+                  <>
+                    <video ref={videoRef} playsInline muted autoPlay className="camera-preview" />
+                    {cameraBusy && (
+                      <span className="camera-status">
+                        <span className="camera-pulse" aria-hidden />
+                        Starting camera…
+                      </span>
+                    )}
+                    {cameraError && (
+                      <div className="camera-error" role="alert">
+                        <p>{cameraError}</p>
+                        {cameraPermission === 'denied' && (
+                          <ol className="camera-guide">
+                            <li>Tap the lock / site icon in the address bar.</li>
+                            <li>Open Site settings → Permissions → Camera.</li>
+                            <li>Choose Allow, then return here.</li>
+                            <li>
+                              On Android/iOS also allow Camera for Chrome in the system app settings.
+                            </li>
+                          </ol>
+                        )}
+                        <div className="camera-error-actions">
+                          <button
+                            type="button"
+                            disabled={cameraBusy}
+                            onClick={() => void startCamera(cameraFacing)}
+                          >
+                            {cameraBusy ? 'Requesting…' : 'Try again'}
+                          </button>
+                          <button type="button" onClick={() => openFilePicker(galleryRef)}>
+                            Choose from gallery
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
-              {cameraError && (
-                <div className="camera-error" role="alert">
-                  <p>{cameraError}</p>
-                  {cameraPermission === 'denied' && (
-                    <ol className="camera-guide">
-                      <li>Tap the lock / site icon in the address bar.</li>
-                      <li>Open Site settings → Permissions → Camera.</li>
-                      <li>Choose Allow, then return here.</li>
-                      <li>
-                        On Android/iOS also allow Camera for Chrome in the system app settings.
-                      </li>
-                    </ol>
-                  )}
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className="composer-menu-fallback"
-                      disabled={cameraBusy}
-                      onClick={() => void startCamera(cameraFacing)}
-                    >
-                      {cameraBusy ? 'Requesting…' : 'Try again'}
+
+              <div className="camera-controls">
+                {captured ? (
+                  <>
+                    <button type="button" className="camera-side-btn" onClick={retakePhoto}>
+                      <RefreshCcw size={18} />
+                      <span>Retake</span>
                     </button>
                     <button
                       type="button"
-                      className="composer-menu-fallback"
-                      onClick={() => openFilePicker(cameraInputRef)}
+                      className="camera-shutter is-send"
+                      onClick={sendCaptured}
+                      aria-label="Send captured photo"
                     >
-                      Pick photo instead
+                      <Send size={22} />
                     </button>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-        <div className="camera-actions">
-          {captured ? (
-            <>
-              <button type="button" className="camera-cancel" onClick={retakePhoto}>
-                Retake
-              </button>
-              <button type="button" className="composer-send camera-send" onClick={sendCaptured}>
-                <Send size={17} /> Send
-              </button>
-            </>
-          ) : (
-            <>
-              <button type="button" className="camera-cancel" onClick={closeCamera}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                className={`camera-shutter ${cameraReady ? '' : 'is-disabled'}`}
-                onClick={() => void capturePhoto()}
-                aria-label="Capture photo"
-              >
-                <span />
-              </button>
-              <span className="camera-spacer" />
-            </>
-          )}
-        </div>
-      </Modal>
+                    <button
+                      type="button"
+                      className="camera-side-btn"
+                      onClick={() => openFilePicker(galleryRef)}
+                    >
+                      <ImageIcon size={18} />
+                      <span>Gallery</span>
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="camera-side-btn"
+                      disabled={cameraBusy || !cameraReady}
+                      onClick={() => openFilePicker(galleryRef)}
+                      aria-label="Choose from gallery"
+                    >
+                      <ImageIcon size={19} />
+                      <span>Gallery</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`camera-shutter ${cameraReady ? '' : 'is-disabled'}`}
+                      onClick={() => void capturePhoto()}
+                      aria-label="Capture photo"
+                      disabled={!cameraReady}
+                    >
+                      <span />
+                    </button>
+                    <button
+                      type="button"
+                      className="camera-side-btn"
+                      disabled={cameraBusy || !cameraReady}
+                      onClick={() =>
+                        void startCamera(cameraFacing === 'environment' ? 'user' : 'environment')
+                      }
+                      aria-label="Switch camera"
+                    >
+                      <RefreshCcw size={19} />
+                      <span>Flip</span>
+                    </button>
+                  </>
+                )}
+              </div>
+
+              <p className="camera-note">
+                The photo is sent only to this chat. Nothing is saved on your device until you
+                download it.
+              </p>
+            </div>
+          </div>,
+          document.body
+        )}
+
     </div>
   );
 }
